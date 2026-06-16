@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify version
+        run: |
+          node -e "const fs=require('fs'); const version=JSON.parse(fs.readFileSync('manifest.json','utf8')).version; if (version !== process.env.GITHUB_REF_NAME) { throw new Error(`manifest version ${version} does not match tag ${process.env.GITHUB_REF_NAME}`); }"
+
+      - name: Build
+        run: npm run build
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" main.js manifest.json --title "$GITHUB_REF_NAME" --notes "Release $GITHUB_REF_NAME" --verify-tag
+
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            ${{ github.workspace }}/main.js
+            ${{ github.workspace }}/manifest.json

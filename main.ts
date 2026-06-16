@@ -128,11 +128,13 @@ export default class PageModePlugin extends Plugin {
     ): Promise<void> {
       const currentFile = this.view instanceof MarkdownView ? this.view.file : null;
       const fileChanged = PageModePlugin.isMarkdownFile(file) && currentFile?.path !== file.path;
-      const hasExplicitMode = Boolean(openState?.state && ("mode" in openState.state || "source" in openState.state));
+      const openStateState = openState?.state;
+      const hasExplicitMode = openStateState !== undefined && ("mode" in openStateState || "source" in openStateState);
       const nextOpenState =
         fileChanged && !hasExplicitMode ? PageModePlugin.withReadingModeOpenState(openState) : openState;
 
-      const openFilePromise = Reflect.apply(originalOpenFile, this, [file, nextOpenState]) as Promise<void>;
+      const openFile = originalOpenFile.bind(this);
+      const openFilePromise = openFile(file, nextOpenState);
       return openFilePromise;
     };
 
@@ -244,15 +246,15 @@ export default class PageModePlugin extends Plugin {
   }
 
   private isEditableTarget(target: HTMLElement): boolean {
-    return Boolean(target.closest("input, textarea, select, [contenteditable='true'], .cm-editor"));
+    return target.closest("input, textarea, select, [contenteditable='true'], .cm-editor") !== null;
   }
 
   private isMarkdownEditorTarget(target: HTMLElement): boolean {
-    return Boolean(target.closest(".cm-editor"));
+    return target.closest(".cm-editor") !== null;
   }
 
   private isHTMLElement(target: Node | null): target is HTMLElement {
-    return Boolean(target?.instanceOf(HTMLElement));
+    return target?.instanceOf(HTMLElement) === true;
   }
 
   private isKeyboardEventInView(event: KeyboardEvent, view: MarkdownView): boolean {
@@ -334,7 +336,7 @@ export default class PageModePlugin extends Plugin {
   }
 
   private async handleWheelWithoutActiveFile(event: WheelEvent, direction: number): Promise<void> {
-    if (this.app.workspace.getActiveFile() || this.app.workspace.activeLeaf?.view.getViewType() !== "empty") {
+    if (this.app.workspace.getActiveFile() || this.app.workspace.getLeaf(false).view.getViewType() !== "empty") {
       return;
     }
 
@@ -355,7 +357,7 @@ export default class PageModePlugin extends Plugin {
   }
 
   private isMainWorkspaceTarget(target: HTMLElement): boolean {
-    return Boolean(target.closest(".workspace-split.mod-root")) && !Boolean(target.closest(".workspace-sidedock"));
+    return target.closest(".workspace-split.mod-root") !== null && target.closest(".workspace-sidedock") === null;
   }
 
   private shouldHandleWheelEvent(event: WheelEvent, direction: number): boolean {
@@ -390,7 +392,7 @@ export default class PageModePlugin extends Plugin {
 
   private scheduleTrackpadGestureReset(): void {
     this.clearTrackpadIdleTimer();
-    this.trackpadIdleTimer = activeWindow.setTimeout(() => {
+    this.trackpadIdleTimer = window.setTimeout(() => {
       this.trackpadAccumulatedDelta = 0;
       this.trackpadGestureLocked = false;
       this.trackpadIdleTimer = null;
@@ -402,7 +404,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    activeWindow.clearTimeout(this.trackpadIdleTimer);
+    window.clearTimeout(this.trackpadIdleTimer);
     this.trackpadIdleTimer = null;
   }
 
