@@ -3,7 +3,7 @@
   "name": "PageMode",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Page-style reading and navigation for Obsidian.",
+  "description": "Page-style reading and navigation.",
   "author": "Hyunyoung Park",
   "authorUrl": "",
   "isDesktopOnly": false

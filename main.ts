@@ -73,7 +73,7 @@ export default class PageModePlugin extends Plugin {
     });
 
     this.registerDomEvent(
-      document,
+      activeDocument,
       "wheel",
       (event: WheelEvent) => {
         void this.handleWheel(event);
@@ -82,7 +82,7 @@ export default class PageModePlugin extends Plugin {
     );
 
     this.registerDomEvent(
-      document,
+      activeDocument,
       "keydown",
       (event: KeyboardEvent) => {
         void this.handleKeyDown(event);
@@ -115,7 +115,11 @@ export default class PageModePlugin extends Plugin {
 
   private patchOpenFileToPreferReadingMode(): void {
     const prototype = WorkspaceLeaf.prototype;
-    const originalOpenFile = prototype.openFile;
+    const originalOpenFile = Reflect.get(prototype, "openFile") as (
+      this: WorkspaceLeaf,
+      file: TFile,
+      openState?: OpenViewState,
+    ) => Promise<void>;
 
     const patchedOpenFile = function patchedOpenFile(
       this: WorkspaceLeaf,
@@ -128,7 +132,8 @@ export default class PageModePlugin extends Plugin {
       const nextOpenState =
         fileChanged && !hasExplicitMode ? PageModePlugin.withReadingModeOpenState(openState) : openState;
 
-      return originalOpenFile.call(this, file, nextOpenState);
+      const openFilePromise = Reflect.apply(originalOpenFile, this, [file, nextOpenState]) as Promise<void>;
+      return openFilePromise;
     };
 
     prototype.openFile = patchedOpenFile;
@@ -215,8 +220,8 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (event.code === "KeyE" && view.getMode() === "preview") {
-      const target = event.target;
-      if (target instanceof HTMLElement && this.isEditableTarget(target)) {
+      const target = event.targetNode;
+      if (this.isHTMLElement(target) && this.isEditableTarget(target)) {
         return;
       }
 
@@ -227,8 +232,8 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (event.code === "Escape" && view.getMode() === "source") {
-      const target = event.target;
-      if (target instanceof HTMLElement && this.isEditableTarget(target) && !this.isMarkdownEditorTarget(target)) {
+      const target = event.targetNode;
+      if (this.isHTMLElement(target) && this.isEditableTarget(target) && !this.isMarkdownEditorTarget(target)) {
         return;
       }
 
@@ -246,13 +251,17 @@ export default class PageModePlugin extends Plugin {
     return Boolean(target.closest(".cm-editor"));
   }
 
+  private isHTMLElement(target: Node | null): target is HTMLElement {
+    return Boolean(target?.instanceOf(HTMLElement));
+  }
+
   private isKeyboardEventInView(event: KeyboardEvent, view: MarkdownView): boolean {
-    const target = event.target;
-    if (!(target instanceof Node)) {
+    const target = event.targetNode;
+    if (!target) {
       return true;
     }
 
-    if (target === document.body || target === document.documentElement) {
+    if (target === event.doc.body || target === event.doc.documentElement) {
       return true;
     }
 
@@ -270,12 +279,17 @@ export default class PageModePlugin extends Plugin {
     }
 
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view || view.getMode() !== "preview") {
+    if (!view) {
+      await this.handleWheelWithoutActiveFile(event, direction);
       return;
     }
 
-    const target = event.target;
-    if (!(target instanceof Node) || !view.containerEl.contains(target)) {
+    if (view.getMode() !== "preview") {
+      return;
+    }
+
+    const target = event.targetNode;
+    if (!target || !view.containerEl.contains(target)) {
       return;
     }
 
@@ -319,6 +333,31 @@ export default class PageModePlugin extends Plugin {
     return view.containerEl.querySelector<HTMLElement>(".markdown-preview-view");
   }
 
+  private async handleWheelWithoutActiveFile(event: WheelEvent, direction: number): Promise<void> {
+    if (this.app.workspace.getActiveFile() || this.app.workspace.activeLeaf?.view.getViewType() !== "empty") {
+      return;
+    }
+
+    const target = event.targetNode;
+    if (!this.isHTMLElement(target) || !this.isMainWorkspaceTarget(target)) {
+      return;
+    }
+
+    if (!this.shouldHandleWheelEvent(event, direction)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    await this.openBoundaryMarkdownFile(direction > 0 ? 1 : -1, false);
+  }
+
+  private isMainWorkspaceTarget(target: HTMLElement): boolean {
+    return Boolean(target.closest(".workspace-split.mod-root")) && !Boolean(target.closest(".workspace-sidedock"));
+  }
+
   private shouldHandleWheelEvent(event: WheelEvent, direction: number): boolean {
     if (!this.isLikelyTrackpadEvent(event)) {
       return true;
@@ -351,7 +390,7 @@ export default class PageModePlugin extends Plugin {
 
   private scheduleTrackpadGestureReset(): void {
     this.clearTrackpadIdleTimer();
-    this.trackpadIdleTimer = window.setTimeout(() => {
+    this.trackpadIdleTimer = activeWindow.setTimeout(() => {
       this.trackpadAccumulatedDelta = 0;
       this.trackpadGestureLocked = false;
       this.trackpadIdleTimer = null;
@@ -363,7 +402,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    window.clearTimeout(this.trackpadIdleTimer);
+    activeWindow.clearTimeout(this.trackpadIdleTimer);
     this.trackpadIdleTimer = null;
   }
 
@@ -418,7 +457,7 @@ export default class PageModePlugin extends Plugin {
   private getContentLineRects(scrollEl: HTMLElement, searchBand: ScrollBand): ContentLineRect[] {
     const scrollRect = scrollEl.getBoundingClientRect();
     const lineRects: ContentLineRect[] = [];
-    const range = document.createRange();
+    const range = scrollEl.doc.createRange();
 
     try {
       this.collectContentLineRects(scrollEl, scrollEl, searchBand, scrollRect, range, lineRects);
@@ -437,7 +476,7 @@ export default class PageModePlugin extends Plugin {
     range: Range,
     lineRects: ContentLineRect[],
   ): void {
-    if (node instanceof HTMLElement) {
+    if (node.instanceOf(HTMLElement)) {
       if (node !== scrollEl) {
         if (node.closest("style, script")) {
           return;
@@ -519,6 +558,34 @@ export default class PageModePlugin extends Plugin {
 
   private async openPreviousMarkdownFile(showNotice: boolean): Promise<void> {
     await this.openAdjacentMarkdownFile(-1, showNotice);
+  }
+
+  private async openBoundaryMarkdownFile(direction: -1 | 1, showNotice: boolean): Promise<void> {
+    if (this.openingFile) {
+      return;
+    }
+
+    const files = this.getFilesInVaultDfsOrder();
+    const file = direction > 0 ? files[0] : files[files.length - 1];
+    if (!file) {
+      if (showNotice) {
+        new Notice("No Markdown files in the vault.");
+      }
+      return;
+    }
+
+    this.openingFile = true;
+    try {
+      await this.app.workspace.getLeaf(false).openFile(
+        file,
+        PageModePlugin.withReadingModeOpenState({ active: true }),
+      );
+    } catch (error) {
+      console.error("Failed to open Markdown file", error);
+      new Notice("Failed to open Markdown file.");
+    } finally {
+      this.openingFile = false;
+    }
   }
 
   private async openAdjacentMarkdownFile(offset: -1 | 1, showNotice: boolean): Promise<void> {

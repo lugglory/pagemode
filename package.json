@@ -1,7 +1,7 @@
 {
   "name": "pagemode",
   "version": "0.1.0",
-  "description": "Page-style reading and navigation for Obsidian",
+  "description": "Page-style reading and navigation",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -15,8 +15,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.30",
-    "builtin-modules": "^3.3.0",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.28.1",
     "obsidian": "^1.8.7",
     "typescript": "^5.4.5"
   }
