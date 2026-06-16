@@ -310,12 +310,13 @@ export default class PageModePlugin extends Plugin {
     const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
     const atTop = currentTop <= SCROLL_EDGE_TOLERANCE_PX;
     const atBottom = currentTop + SCROLL_EDGE_TOLERANCE_PX >= maxScrollTop;
+    const lastContentLineFullyVisible = this.isLastContentLineFullyVisible(scrollEl);
     const nextTop = this.getNextPageTop(scrollEl, direction, maxScrollTop);
 
     event.preventDefault();
     event.stopPropagation();
 
-    if (direction > 0 && atBottom) {
+    if (direction > 0 && (atBottom || lastContentLineFullyVisible)) {
       await this.openNextMarkdownFile(false);
       return;
     }
@@ -454,6 +455,17 @@ export default class PageModePlugin extends Plugin {
     }
 
     return nextTop;
+  }
+
+  private isLastContentLineFullyVisible(scrollEl: HTMLElement): boolean {
+    const viewportBottom = scrollEl.scrollTop + scrollEl.clientHeight;
+    const lineRects = this.getContentLineRects(scrollEl, {
+      top: scrollEl.scrollTop,
+      bottom: scrollEl.scrollHeight,
+    });
+    const lastLine = lineRects[lineRects.length - 1];
+
+    return lastLine !== undefined && lastLine.bottom <= viewportBottom + LINE_BOUNDARY_EPSILON_PX;
   }
 
   private getContentLineRects(scrollEl: HTMLElement, searchBand: ScrollBand): ContentLineRect[] {
