@@ -1,0 +1,23 @@
+{
+  "name": "pagemode",
+  "version": "0.1.0",
+  "description": "Page-style reading and navigation for Obsidian",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin"
+  ],
+  "author": "Hyunyoung Park",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.21.5",
+    "obsidian": "^1.8.7",
+    "typescript": "^5.4.5"
+  }
+}
