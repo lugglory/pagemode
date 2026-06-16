@@ -295,6 +295,13 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
+    if (this.isInlineTitleTarget(target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      await this.openAdjacentMarkdownFile(direction > 0 ? 1 : -1, false);
+      return;
+    }
+
     const scrollEl = this.getPreviewScrollElement(view);
     if (!scrollEl || !scrollEl.contains(target)) {
       return;
@@ -334,6 +341,10 @@ export default class PageModePlugin extends Plugin {
 
   private getPreviewScrollElement(view: MarkdownView): HTMLElement | null {
     return view.containerEl.querySelector<HTMLElement>(".markdown-preview-view");
+  }
+
+  private isInlineTitleTarget(target: Node): boolean {
+    return target.instanceOf(Element) && target.closest(".inline-title") !== null;
   }
 
   private async handleWheelWithoutActiveFile(event: WheelEvent, direction: number): Promise<void> {
