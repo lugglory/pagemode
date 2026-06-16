@@ -8,6 +8,9 @@ import {
   TFolder,
   WorkspaceLeaf,
   normalizePath,
+  type Editor,
+  type EditorPosition,
+  type Menu,
 } from "obsidian";
 
 const SCROLL_EDGE_TOLERANCE_PX = 24;
@@ -27,8 +30,27 @@ type ScrollBand = {
   bottom: number;
 };
 
+type SelectedEditorRange = {
+  from: EditorPosition;
+  to: EditorPosition;
+  text: string;
+};
+
+type SidebarMarkdownTarget = {
+  file: TFile;
+  side: "left" | "right";
+  displayName: string;
+};
+
+type DraggedEditorSelection = {
+  editor: Editor;
+  sourceFile: TFile;
+  ranges: SelectedEditorRange[];
+};
+
 export default class PageModePlugin extends Plugin {
   private openingFile = false;
+  private draggedEditorSelection: DraggedEditorSelection | null = null;
   private trackpadAccumulatedDelta = 0;
   private trackpadGestureLocked = false;
   private trackpadIdleTimer: number | null = null;
@@ -83,6 +105,24 @@ export default class PageModePlugin extends Plugin {
 
     this.registerDomEvent(
       activeDocument,
+      "dragstart",
+      (event: DragEvent) => {
+        this.handleDragStart(event);
+      },
+      { capture: true },
+    );
+
+    this.registerDomEvent(
+      activeDocument,
+      "dragend",
+      () => {
+        this.draggedEditorSelection = null;
+      },
+      { capture: true },
+    );
+
+    this.registerDomEvent(
+      activeDocument,
       "keydown",
       (event: KeyboardEvent) => {
         void this.handleKeyDown(event);
@@ -109,6 +149,18 @@ export default class PageModePlugin extends Plugin {
               void this.moveCurrentFileToFolder(file);
             });
         });
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, info) => {
+        this.addExtractSelectionMenuItems(menu, editor, info.file);
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("editor-drop", (event, editor, info) => {
+        this.handleEditorDrop(event, editor, info.file);
       }),
     );
   }
@@ -255,6 +307,247 @@ export default class PageModePlugin extends Plugin {
 
   private isHTMLElement(target: Node | null): target is HTMLElement {
     return target?.instanceOf(HTMLElement) === true;
+  }
+
+  private handleDragStart(event: DragEvent): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const target = event.targetNode;
+    if (!view?.file || view.getMode() !== "source" || !target || !view.containerEl.contains(target)) {
+      this.draggedEditorSelection = null;
+      return;
+    }
+
+    const ranges = this.getSelectedEditorRanges(view.editor);
+    if (ranges.length === 0) {
+      this.draggedEditorSelection = null;
+      return;
+    }
+
+    this.draggedEditorSelection = {
+      editor: view.editor,
+      sourceFile: view.file,
+      ranges,
+    };
+  }
+
+  private handleEditorDrop(event: DragEvent, targetEditor: Editor, targetFile: TFile | null): void {
+    const draggedSelection = this.draggedEditorSelection;
+    this.draggedEditorSelection = null;
+
+    if (
+      !draggedSelection ||
+      event.ctrlKey ||
+      event.metaKey ||
+      !targetFile ||
+      !PageModePlugin.isMarkdownFile(targetFile) ||
+      targetFile.path === draggedSelection.sourceFile.path ||
+      targetEditor === draggedSelection.editor
+    ) {
+      return;
+    }
+
+    const targetValueBeforeDrop = targetEditor.getValue();
+
+    window.setTimeout(() => {
+      if (targetEditor.getValue() === targetValueBeforeDrop) {
+        return;
+      }
+
+      if (!this.areEditorRangesUnchanged(draggedSelection.editor, draggedSelection.ranges)) {
+        return;
+      }
+
+      this.deleteEditorRanges(draggedSelection.editor, draggedSelection.ranges);
+    }, 0);
+  }
+
+  private addExtractSelectionMenuItems(menu: Menu, editor: Editor, sourceFile: TFile | null): void {
+    if (!sourceFile || !PageModePlugin.isMarkdownFile(sourceFile)) {
+      return;
+    }
+
+    const ranges = this.getSelectedEditorRanges(editor);
+    if (ranges.length === 0) {
+      return;
+    }
+
+    const targets = this.getSidebarMarkdownTargets(sourceFile);
+    menu.addSeparator();
+
+    if (targets.length === 0) {
+      menu.addItem((item) => {
+        item.setTitle("Extract selection to sidebar").setIcon("panel-right-open").setDisabled(true);
+      });
+      return;
+    }
+
+    if (targets.length === 1) {
+      const target = targets[0];
+      menu.addItem((item) => {
+        item
+          .setTitle("Extract selection to sidebar")
+          .setIcon("panel-right-open")
+          .onClick(() => {
+            void this.extractSelectionToSidebarFile(editor, ranges, target.file);
+          });
+      });
+      return;
+    }
+
+    for (const target of targets) {
+      menu.addItem((item) => {
+        item
+          .setTitle(`Extract to ${target.displayName}`)
+          .setIcon(target.side === "left" ? "panel-left-open" : "panel-right-open")
+          .onClick(() => {
+            void this.extractSelectionToSidebarFile(editor, ranges, target.file);
+          });
+      });
+    }
+  }
+
+  private async extractSelectionToSidebarFile(editor: Editor, ranges: SelectedEditorRange[], targetFile: TFile): Promise<void> {
+    if (!this.areEditorRangesUnchanged(editor, ranges)) {
+      new Notice("Selection changed before extraction.");
+      return;
+    }
+
+    const extractedText = this.getExtractedText(ranges);
+    if (!extractedText) {
+      new Notice("No selected text to extract.");
+      return;
+    }
+
+    try {
+      await this.appendTextToFile(targetFile, extractedText);
+      this.deleteEditorRanges(editor, ranges);
+      new Notice(`Extracted to ${targetFile.basename}.`);
+    } catch (error) {
+      console.error("Failed to extract selection", error);
+      new Notice("Failed to extract selection.");
+    }
+  }
+
+  private getSidebarMarkdownTargets(sourceFile: TFile): SidebarMarkdownTarget[] {
+    const targets: SidebarMarkdownTarget[] = [];
+    const leftLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.leftSplit);
+    const rightLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rightSplit);
+
+    this.addSidebarMarkdownTarget(targets, leftLeaf, "left", sourceFile);
+    this.addSidebarMarkdownTarget(targets, rightLeaf, "right", sourceFile);
+
+    const basenameCounts = new Map<string, number>();
+    for (const target of targets) {
+      basenameCounts.set(target.displayName, (basenameCounts.get(target.displayName) ?? 0) + 1);
+    }
+
+    for (const target of targets) {
+      if ((basenameCounts.get(target.displayName) ?? 0) > 1) {
+        target.displayName = target.file.path;
+      }
+    }
+
+    return targets.sort((a, b) => this.compareSidebarTargets(a, b));
+  }
+
+  private addSidebarMarkdownTarget(
+    targets: SidebarMarkdownTarget[],
+    leaf: WorkspaceLeaf | null,
+    side: "left" | "right",
+    sourceFile: TFile,
+  ): void {
+    const view = leaf?.view;
+    if (!(view instanceof MarkdownView) || !view.file || view.file.path === sourceFile.path) {
+      return;
+    }
+
+    targets.push({
+      file: view.file,
+      side,
+      displayName: view.file.basename,
+    });
+  }
+
+  private compareSidebarTargets(a: SidebarMarkdownTarget, b: SidebarMarkdownTarget): number {
+    if (a.side !== b.side) {
+      return a.side === "left" ? -1 : 1;
+    }
+
+    return this.collator.compare(a.displayName, b.displayName);
+  }
+
+  private getSelectedEditorRanges(editor: Editor): SelectedEditorRange[] {
+    return editor
+      .listSelections()
+      .map((selection) => this.normalizeSelectedEditorRange(editor, selection.anchor, selection.head))
+      .filter((range): range is SelectedEditorRange => range !== null)
+      .sort((a, b) => this.compareEditorPositions(a.from, b.from));
+  }
+
+  private normalizeSelectedEditorRange(
+    editor: Editor,
+    anchor: EditorPosition,
+    head: EditorPosition,
+  ): SelectedEditorRange | null {
+    if (this.compareEditorPositions(anchor, head) === 0) {
+      return null;
+    }
+
+    const from = this.compareEditorPositions(anchor, head) < 0 ? anchor : head;
+    const to = from === anchor ? head : anchor;
+    const text = editor.getRange(from, to);
+
+    if (text.length === 0) {
+      return null;
+    }
+
+    return { from, to, text };
+  }
+
+  private compareEditorPositions(a: EditorPosition, b: EditorPosition): number {
+    return a.line - b.line || a.ch - b.ch;
+  }
+
+  private areEditorRangesUnchanged(editor: Editor, ranges: SelectedEditorRange[]): boolean {
+    return ranges.every((range) => editor.getRange(range.from, range.to) === range.text);
+  }
+
+  private deleteEditorRanges(editor: Editor, ranges: SelectedEditorRange[]): void {
+    const changes = [...ranges]
+      .sort((a, b) => this.compareEditorPositions(b.from, a.from))
+      .map((range) => ({
+        from: range.from,
+        to: range.to,
+        text: "",
+      }));
+
+    editor.transaction({ changes }, "pagemode-extract-selection");
+  }
+
+  private getExtractedText(ranges: SelectedEditorRange[]): string {
+    return ranges.map((range) => this.trimBoundaryNewlines(range.text)).filter(Boolean).join("\n\n");
+  }
+
+  private trimBoundaryNewlines(text: string): string {
+    return text.replace(/^\n+|\n+$/g, "");
+  }
+
+  private async appendTextToFile(file: TFile, text: string): Promise<void> {
+    await this.app.vault.process(file, (content) => {
+      if (content.length === 0) {
+        return text;
+      }
+
+      if (content.endsWith("\n\n")) {
+        return `${content}${text}`;
+      }
+
+      if (content.endsWith("\n")) {
+        return `${content}\n${text}`;
+      }
+
+      return `${content}\n\n${text}`;
+    });
   }
 
   private isKeyboardEventInView(event: KeyboardEvent, view: MarkdownView): boolean {

@@ -11,6 +11,8 @@ PageMode makes Obsidian's Reading view behave more like paged reading, with quic
 - Opens the first or last Markdown file when scrolling down or up in the empty document area.
 - Adds next/previous Markdown file commands and ribbon buttons.
 - Press `E` in Reading view to edit, and press `Esc` in the editor to return to Reading view.
+- Moves dragged editor selections to another Markdown editor by default; hold `Ctrl`/`Cmd` to copy instead.
+- Adds an editor context menu item to extract the current selection to a Markdown file open in the sidebar.
 - Adds `Move current file here` to folder context menus in the file explorer.
 
 ## Manual install
