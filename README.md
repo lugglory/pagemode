@@ -1,18 +1,16 @@
 # PageMode
 
-PageMode makes Obsidian's Reading view behave more like paged reading, with quick file navigation and filing actions.
+PageMode makes Obsidian notes behave more like paged reading, with quick file navigation and filing actions.
 
 ## Features
 
-- Opens Markdown files in Reading view by default unless a specific mode is requested.
-- Turns mouse wheel and trackpad scrolling in Reading view into page-sized jumps aligned to nearby text lines.
+- Turns mouse wheel and trackpad scrolling in Reading and editing views into page-sized jumps aligned to nearby text lines.
 - Opens the next or previous Markdown file when scrolling past the bottom or top of a note.
 - Scroll on a note's inline title to open the next or previous Markdown file.
 - Opens the first or last Markdown file when scrolling down or up in the empty document area.
 - Adds next/previous Markdown file commands and ribbon buttons.
-- Press `E` in Reading view to edit, and press `Esc` in the editor to return to Reading view.
 - Moves dragged editor selections to another Markdown editor by default; hold `Ctrl`/`Cmd` to copy instead.
-- Adds an editor context menu item to extract the current selection to a Markdown file open in the sidebar.
+- Adds a command and editor context menu item to extract the current selection to a Markdown file open in the sidebar.
 - Adds `Move current file here` to folder context menus in the file explorer.
 
 ## Manual install

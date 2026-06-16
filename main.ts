@@ -1,7 +1,6 @@
 import {
   MarkdownView,
   Notice,
-  OpenViewState,
   Plugin,
   TAbstractFile,
   TFile,
@@ -28,6 +27,11 @@ type ContentLineRect = {
 type ScrollBand = {
   top: number;
   bottom: number;
+};
+
+type PageScrollContext = {
+  scrollEl: HTMLElement;
+  contentEl: HTMLElement;
 };
 
 type SelectedEditorRange = {
@@ -60,8 +64,6 @@ export default class PageModePlugin extends Plugin {
   });
 
   onload(): void {
-    this.patchOpenFileToPreferReadingMode();
-
     this.addCommand({
       id: "open-next-file-in-folder",
       name: "Open next Markdown file",
@@ -79,10 +81,18 @@ export default class PageModePlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "switch-active-file-to-edit-mode",
-      name: "Switch active file to edit mode",
-      callback: () => {
-        void this.switchActiveMarkdownViewToEditMode();
+      id: "extract-selection-to-sidebar",
+      name: "Extract selection to sidebar",
+      editorCheckCallback: (checking, editor, info) => {
+        if (!this.canExtractSelectionToSidebar(editor, info.file)) {
+          return false;
+        }
+
+        if (!checking) {
+          void this.extractSelectionToSidebarCommand(editor, info.file);
+        }
+
+        return true;
       },
     });
 
@@ -117,15 +127,6 @@ export default class PageModePlugin extends Plugin {
       "dragend",
       () => {
         this.draggedEditorSelection = null;
-      },
-      { capture: true },
-    );
-
-    this.registerDomEvent(
-      activeDocument,
-      "keydown",
-      (event: KeyboardEvent) => {
-        void this.handleKeyDown(event);
       },
       { capture: true },
     );
@@ -165,144 +166,8 @@ export default class PageModePlugin extends Plugin {
     );
   }
 
-  private patchOpenFileToPreferReadingMode(): void {
-    const prototype = WorkspaceLeaf.prototype;
-    const originalOpenFile = Reflect.get(prototype, "openFile") as (
-      this: WorkspaceLeaf,
-      file: TFile,
-      openState?: OpenViewState,
-    ) => Promise<void>;
-
-    const patchedOpenFile = function patchedOpenFile(
-      this: WorkspaceLeaf,
-      file: TFile,
-      openState?: OpenViewState,
-    ): Promise<void> {
-      const currentFile = this.view instanceof MarkdownView ? this.view.file : null;
-      const fileChanged = PageModePlugin.isMarkdownFile(file) && currentFile?.path !== file.path;
-      const openStateState = openState?.state;
-      const hasExplicitMode = openStateState !== undefined && ("mode" in openStateState || "source" in openStateState);
-      const nextOpenState =
-        fileChanged && !hasExplicitMode ? PageModePlugin.withReadingModeOpenState(openState) : openState;
-
-      const openFile = originalOpenFile.bind(this);
-      const openFilePromise = openFile(file, nextOpenState);
-      return openFilePromise;
-    };
-
-    prototype.openFile = patchedOpenFile;
-
-    this.register(() => {
-      if (prototype.openFile === patchedOpenFile) {
-        prototype.openFile = originalOpenFile;
-      }
-    });
-  }
-
-  private static withReadingModeOpenState(openState?: OpenViewState): OpenViewState {
-    return {
-      ...openState,
-      state: {
-        ...(openState?.state ?? {}),
-        mode: "preview",
-        source: false,
-      },
-    };
-  }
-
   private static isMarkdownFile(file: TFile): boolean {
     return file.extension.toLowerCase() === "md";
-  }
-
-  private async switchActiveMarkdownViewToEditMode(): Promise<void> {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view) {
-      new Notice("No active Markdown file.");
-      return;
-    }
-
-    await this.switchMarkdownViewToEditMode(view);
-  }
-
-  private async switchMarkdownViewToEditMode(view: MarkdownView): Promise<void> {
-    if (view.getMode() === "preview") {
-      await this.toggleMarkdownViewMode(view);
-    }
-  }
-
-  private async switchMarkdownViewToReadingMode(view: MarkdownView): Promise<void> {
-    if (view.getMode() === "source") {
-      await this.toggleMarkdownViewMode(view);
-    }
-  }
-
-  private async toggleMarkdownViewMode(view: MarkdownView): Promise<void> {
-    const commands = (this.app as typeof this.app & {
-      commands?: {
-        executeCommandById?: (id: string) => boolean;
-      };
-    }).commands;
-
-    if (!commands?.executeCommandById) {
-      return;
-    }
-
-    this.app.workspace.setActiveLeaf(view.leaf, { focus: true });
-    commands.executeCommandById("markdown:toggle-preview");
-  }
-
-  private async handleKeyDown(event: KeyboardEvent): Promise<void> {
-    if (
-      event.defaultPrevented ||
-      event.repeat ||
-      event.isComposing ||
-      event.ctrlKey ||
-      event.metaKey ||
-      event.altKey ||
-      event.shiftKey
-    ) {
-      return;
-    }
-
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view) {
-      return;
-    }
-
-    if (!this.isKeyboardEventInView(event, view)) {
-      return;
-    }
-
-    if (event.code === "KeyE" && view.getMode() === "preview") {
-      const target = event.targetNode;
-      if (this.isHTMLElement(target) && this.isEditableTarget(target)) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      await this.switchMarkdownViewToEditMode(view);
-      return;
-    }
-
-    if (event.code === "Escape" && view.getMode() === "source") {
-      const target = event.targetNode;
-      if (this.isHTMLElement(target) && this.isEditableTarget(target) && !this.isMarkdownEditorTarget(target)) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      await this.switchMarkdownViewToReadingMode(view);
-    }
-  }
-
-  private isEditableTarget(target: HTMLElement): boolean {
-    return target.closest("input, textarea, select, [contenteditable='true'], .cm-editor") !== null;
-  }
-
-  private isMarkdownEditorTarget(target: HTMLElement): boolean {
-    return target.closest(".cm-editor") !== null;
   }
 
   private isHTMLElement(target: Node | null): target is HTMLElement {
@@ -362,15 +227,11 @@ export default class PageModePlugin extends Plugin {
   }
 
   private addExtractSelectionMenuItems(menu: Menu, editor: Editor, sourceFile: TFile | null): void {
-    if (!sourceFile || !PageModePlugin.isMarkdownFile(sourceFile)) {
+    if (!this.canExtractSelectionToSidebar(editor, sourceFile)) {
       return;
     }
 
     const ranges = this.getSelectedEditorRanges(editor);
-    if (ranges.length === 0) {
-      return;
-    }
-
     const targets = this.getSidebarMarkdownTargets(sourceFile);
     menu.addSeparator();
 
@@ -404,6 +265,34 @@ export default class PageModePlugin extends Plugin {
           });
       });
     }
+  }
+
+  private canExtractSelectionToSidebar(editor: Editor, sourceFile: TFile | null): sourceFile is TFile {
+    return (
+      sourceFile !== null &&
+      PageModePlugin.isMarkdownFile(sourceFile) &&
+      this.getSelectedEditorRanges(editor).length > 0
+    );
+  }
+
+  private async extractSelectionToSidebarCommand(editor: Editor, sourceFile: TFile | null): Promise<void> {
+    if (!this.canExtractSelectionToSidebar(editor, sourceFile)) {
+      new Notice("No selected text to extract.");
+      return;
+    }
+
+    const targets = this.getSidebarMarkdownTargets(sourceFile);
+    if (targets.length === 0) {
+      new Notice("No Markdown file open in the sidebar.");
+      return;
+    }
+
+    if (targets.length > 1) {
+      new Notice("Multiple sidebar files are open. Use the context menu to choose one.");
+      return;
+    }
+
+    await this.extractSelectionToSidebarFile(editor, this.getSelectedEditorRanges(editor), targets[0].file);
   }
 
   private async extractSelectionToSidebarFile(editor: Editor, ranges: SelectedEditorRange[], targetFile: TFile): Promise<void> {
@@ -579,7 +468,8 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    if (view.getMode() !== "preview") {
+    const mode = view.getMode();
+    if (mode !== "preview" && mode !== "source") {
       return;
     }
 
@@ -595,8 +485,8 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const scrollEl = this.getPreviewScrollElement(view);
-    if (!scrollEl || !scrollEl.contains(target)) {
+    const scrollContext = this.getPageScrollContext(view);
+    if (!scrollContext || !scrollContext.scrollEl.contains(target)) {
       return;
     }
 
@@ -606,12 +496,13 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
+    const { scrollEl, contentEl } = scrollContext;
     const currentTop = scrollEl.scrollTop;
     const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
     const atTop = currentTop <= SCROLL_EDGE_TOLERANCE_PX;
     const atBottom = currentTop + SCROLL_EDGE_TOLERANCE_PX >= maxScrollTop;
-    const lastContentLineFullyVisible = this.isLastContentLineFullyVisible(scrollEl);
-    const nextTop = this.getNextPageTop(scrollEl, direction, maxScrollTop);
+    const lastContentLineFullyVisible = mode === "preview" && this.isLastContentLineFullyVisible(scrollEl, contentEl);
+    const nextTop = this.getNextPageTop(scrollEl, contentEl, direction, maxScrollTop);
 
     event.preventDefault();
     event.stopPropagation();
@@ -632,8 +523,21 @@ export default class PageModePlugin extends Plugin {
     });
   }
 
-  private getPreviewScrollElement(view: MarkdownView): HTMLElement | null {
-    return view.containerEl.querySelector<HTMLElement>(".markdown-preview-view");
+  private getPageScrollContext(view: MarkdownView): PageScrollContext | null {
+    if (view.getMode() === "preview") {
+      const previewEl = view.containerEl.querySelector<HTMLElement>(".markdown-preview-view");
+      return previewEl ? { scrollEl: previewEl, contentEl: previewEl } : null;
+    }
+
+    const sourceScrollEl = view.containerEl.querySelector<HTMLElement>(".cm-scroller");
+    if (!sourceScrollEl) {
+      return null;
+    }
+
+    return {
+      scrollEl: sourceScrollEl,
+      contentEl: sourceScrollEl.querySelector<HTMLElement>(".cm-content") ?? sourceScrollEl,
+    };
   }
 
   private isInlineTitleTarget(target: Node): boolean {
@@ -713,7 +617,12 @@ export default class PageModePlugin extends Plugin {
     this.trackpadIdleTimer = null;
   }
 
-  private getNextPageTop(scrollEl: HTMLElement, direction: number, maxScrollTop: number): number {
+  private getNextPageTop(
+    scrollEl: HTMLElement,
+    contentEl: HTMLElement,
+    direction: number,
+    maxScrollTop: number,
+  ): number {
     const currentTop = scrollEl.scrollTop;
     const pageHeight = scrollEl.clientHeight;
     const fallbackTop =
@@ -729,7 +638,7 @@ export default class PageModePlugin extends Plugin {
             top: Math.max(0, targetBoundary),
             bottom: currentTop - MIN_PAGE_ADVANCE_PX,
           };
-    const lineRects = this.getContentLineRects(scrollEl, searchBand);
+    const lineRects = this.getContentLineRects(scrollEl, contentEl, searchBand);
 
     if (lineRects.length === 0) {
       return fallbackTop;
@@ -761,9 +670,9 @@ export default class PageModePlugin extends Plugin {
     return nextTop;
   }
 
-  private isLastContentLineFullyVisible(scrollEl: HTMLElement): boolean {
+  private isLastContentLineFullyVisible(scrollEl: HTMLElement, contentEl: HTMLElement): boolean {
     const viewportBottom = scrollEl.scrollTop + scrollEl.clientHeight;
-    const lineRects = this.getContentLineRects(scrollEl, {
+    const lineRects = this.getContentLineRects(scrollEl, contentEl, {
       top: scrollEl.scrollTop,
       bottom: scrollEl.scrollHeight,
     });
@@ -772,13 +681,17 @@ export default class PageModePlugin extends Plugin {
     return lastLine !== undefined && lastLine.bottom <= viewportBottom + LINE_BOUNDARY_EPSILON_PX;
   }
 
-  private getContentLineRects(scrollEl: HTMLElement, searchBand: ScrollBand): ContentLineRect[] {
+  private getContentLineRects(
+    scrollEl: HTMLElement,
+    contentEl: HTMLElement,
+    searchBand: ScrollBand,
+  ): ContentLineRect[] {
     const scrollRect = scrollEl.getBoundingClientRect();
     const lineRects: ContentLineRect[] = [];
     const range = scrollEl.doc.createRange();
 
     try {
-      this.collectContentLineRects(scrollEl, scrollEl, searchBand, scrollRect, range, lineRects);
+      this.collectContentLineRects(scrollEl, contentEl, searchBand, scrollRect, range, lineRects);
     } finally {
       range.detach();
     }
@@ -894,10 +807,7 @@ export default class PageModePlugin extends Plugin {
 
     this.openingFile = true;
     try {
-      await this.app.workspace.getLeaf(false).openFile(
-        file,
-        PageModePlugin.withReadingModeOpenState({ active: true }),
-      );
+      await this.app.workspace.getLeaf(false).openFile(file, { active: true });
     } catch (error) {
       console.error("Failed to open Markdown file", error);
       new Notice("Failed to open Markdown file.");
@@ -929,10 +839,7 @@ export default class PageModePlugin extends Plugin {
 
     this.openingFile = true;
     try {
-      await this.app.workspace.getLeaf(false).openFile(
-        adjacentFile,
-        PageModePlugin.withReadingModeOpenState({ active: true }),
-      );
+      await this.app.workspace.getLeaf(false).openFile(adjacentFile, { active: true });
     } catch (error) {
       console.error("Failed to open adjacent Markdown file", error);
       new Notice("Failed to open Markdown file.");
