@@ -487,7 +487,7 @@ export default class PageModePlugin extends Plugin {
     let file: TFile | null = null;
     try {
       file = await this.createRootMarkdownFile();
-      await leaf.openFile(file, { active: false });
+      await leaf.openFile(file, { active: true });
       return { file, displayName: file.basename };
     } catch (error) {
       if (file) {
