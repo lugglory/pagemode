@@ -8,7 +8,6 @@ import {
   TAbstractFile,
   TFile,
   TFolder,
-  WorkspaceLeaf,
   normalizePath,
   type Editor,
   type EditorPosition,
@@ -52,12 +51,6 @@ type SelectedEditorRange = {
   from: EditorPosition;
   to: EditorPosition;
   text: string;
-};
-
-type SidebarMarkdownTarget = {
-  file: TFile;
-  side: "left" | "right";
-  displayName: string;
 };
 
 type DraggedEditorSelection = {
@@ -110,22 +103,6 @@ export default class PageModePlugin extends Plugin {
       name: "Open previous Markdown file",
       callback: () => {
         void this.openPreviousMarkdownFile(true);
-      },
-    });
-
-    this.addCommand({
-      id: "extract-selection-to-sidebar",
-      name: "Extract selection to sidebar",
-      editorCheckCallback: (checking, editor, info) => {
-        if (!this.canExtractSelectionToSidebar(editor, info.file)) {
-          return false;
-        }
-
-        if (!checking) {
-          void this.extractSelectionToSidebarCommand(editor, info.file);
-        }
-
-        return true;
       },
     });
 
@@ -323,8 +300,8 @@ export default class PageModePlugin extends Plugin {
     const selectors = this.settings.hiddenPaths.flatMap((path) => {
       const dataPath = this.getCssString(path);
       return [
-        `.workspace-leaf-content[data-type="file-explorer"] .nav-file:has(.nav-file-title[data-path=${dataPath}])`,
-        `.workspace-leaf-content[data-type="file-explorer"] .nav-folder:has(.nav-folder-title[data-path=${dataPath}])`,
+        `.workspace-leaf-content[data-type="file-explorer"] .nav-file:has(> .nav-file-title[data-path=${dataPath}])`,
+        `.workspace-leaf-content[data-type="file-explorer"] .nav-folder:has(> .nav-folder-title[data-path=${dataPath}])`,
       ];
     });
 
@@ -392,47 +369,6 @@ export default class PageModePlugin extends Plugin {
     }, 0);
   }
 
-  private addExtractSelectionMenuItems(menu: Menu, editor: Editor, sourceFile: TFile | null): void {
-    if (!this.canExtractSelectionToSidebar(editor, sourceFile)) {
-      return;
-    }
-
-    const ranges = this.getSelectedEditorRanges(editor);
-    const targets = this.getSidebarMarkdownTargets(sourceFile);
-    menu.addSeparator();
-
-    if (targets.length === 0) {
-      menu.addItem((item) => {
-        item.setTitle("Extract selection to sidebar").setIcon("panel-right-open").setDisabled(true);
-      });
-      return;
-    }
-
-    if (targets.length === 1) {
-      const target = targets[0];
-      menu.addItem((item) => {
-        item
-          .setTitle("Extract selection to sidebar")
-          .setIcon("panel-right-open")
-          .onClick(() => {
-            void this.extractSelectionToSidebarFile(editor, ranges, target.file);
-          });
-      });
-      return;
-    }
-
-    for (const target of targets) {
-      menu.addItem((item) => {
-        item
-          .setTitle(`Extract to ${target.displayName}`)
-          .setIcon(target.side === "left" ? "panel-left-open" : "panel-right-open")
-          .onClick(() => {
-            void this.extractSelectionToSidebarFile(editor, ranges, target.file);
-          });
-      });
-    }
-  }
-
   private addSendToRightDocumentMenuItem(menu: Menu, editor: Editor, sourceFile: TFile | null): void {
     const sourceView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!(sourceView instanceof MarkdownView) || sourceView.getMode() !== "source" || !sourceFile) {
@@ -455,34 +391,6 @@ export default class PageModePlugin extends Plugin {
         void this.extractSelectionToRightDocument(editor, sourceFile, sourceView);
       });
     });
-  }
-
-  private canExtractSelectionToSidebar(editor: Editor, sourceFile: TFile | null): sourceFile is TFile {
-    return (
-      sourceFile !== null &&
-      PageModePlugin.isMarkdownFile(sourceFile) &&
-      this.getSelectedEditorRanges(editor).length > 0
-    );
-  }
-
-  private async extractSelectionToSidebarCommand(editor: Editor, sourceFile: TFile | null): Promise<void> {
-    if (!this.canExtractSelectionToSidebar(editor, sourceFile)) {
-      new Notice("No selected text to extract.");
-      return;
-    }
-
-    const targets = this.getSidebarMarkdownTargets(sourceFile);
-    if (targets.length === 0) {
-      new Notice("No Markdown file open in the sidebar.");
-      return;
-    }
-
-    if (targets.length > 1) {
-      new Notice("Multiple sidebar files are open. Use the context menu to choose one.");
-      return;
-    }
-
-    await this.extractSelectionToSidebarFile(editor, this.getSelectedEditorRanges(editor), targets[0].file);
   }
 
   private addMarkdownViewActions(): void {
@@ -558,7 +466,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    await this.extractSelectionToSidebarFile(editor, ranges, target.file);
+    await this.extractSelectionToMarkdownFile(editor, ranges, target.file);
   }
 
   private async getOrCreateRightMarkdownTarget(
@@ -570,17 +478,25 @@ export default class PageModePlugin extends Plugin {
       return existingTarget;
     }
 
-    try {
-      const file = await this.createRootMarkdownFile();
-      const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true);
-      if (!leaf) {
-        new Notice("No right sidebar available.");
-        return { file, displayName: file.basename };
-      }
+    const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true);
+    if (!leaf) {
+      new Notice("No right sidebar available.");
+      return null;
+    }
 
+    let file: TFile | null = null;
+    try {
+      file = await this.createRootMarkdownFile();
       await leaf.openFile(file, { active: false });
       return { file, displayName: file.basename };
     } catch (error) {
+      if (file) {
+        try {
+          await this.app.vault.trash(file, false);
+        } catch (cleanupError) {
+          console.error("Failed to clean up right Markdown document", cleanupError);
+        }
+      }
       console.error("Failed to create right Markdown document", error);
       new Notice("Failed to create a right document.");
       return null;
@@ -614,7 +530,7 @@ export default class PageModePlugin extends Plugin {
     return `# ${file.basename}\n\n${body}`;
   }
 
-  private async extractSelectionToSidebarFile(editor: Editor, ranges: SelectedEditorRange[], targetFile: TFile): Promise<void> {
+  private async extractSelectionToMarkdownFile(editor: Editor, ranges: SelectedEditorRange[], targetFile: TFile): Promise<void> {
     if (!this.areEditorRangesUnchanged(editor, ranges)) {
       new Notice("Selection changed before extraction.");
       return;
@@ -634,46 +550,6 @@ export default class PageModePlugin extends Plugin {
       console.error("Failed to extract selection", error);
       new Notice("Failed to extract selection.");
     }
-  }
-
-  private getSidebarMarkdownTargets(sourceFile: TFile): SidebarMarkdownTarget[] {
-    const targets: SidebarMarkdownTarget[] = [];
-    const leftLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.leftSplit);
-    const rightLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rightSplit);
-
-    this.addSidebarMarkdownTarget(targets, leftLeaf, "left", sourceFile);
-    this.addSidebarMarkdownTarget(targets, rightLeaf, "right", sourceFile);
-
-    const basenameCounts = new Map<string, number>();
-    for (const target of targets) {
-      basenameCounts.set(target.displayName, (basenameCounts.get(target.displayName) ?? 0) + 1);
-    }
-
-    for (const target of targets) {
-      if ((basenameCounts.get(target.displayName) ?? 0) > 1) {
-        target.displayName = target.file.path;
-      }
-    }
-
-    return targets.sort((a, b) => this.compareSidebarTargets(a, b));
-  }
-
-  private addSidebarMarkdownTarget(
-    targets: SidebarMarkdownTarget[],
-    leaf: WorkspaceLeaf | null,
-    side: "left" | "right",
-    sourceFile: TFile,
-  ): void {
-    const view = leaf?.view;
-    if (!(view instanceof MarkdownView) || !view.file || view.file.path === sourceFile.path) {
-      return;
-    }
-
-    targets.push({
-      file: view.file,
-      side,
-      displayName: view.file.basename,
-    });
   }
 
   private getNearestRightMarkdownTarget(sourceView: MarkdownView, sourceFile: TFile): MarkdownViewTarget | null {
@@ -737,14 +613,6 @@ export default class PageModePlugin extends Plugin {
     }
 
     return 0;
-  }
-
-  private compareSidebarTargets(a: SidebarMarkdownTarget, b: SidebarMarkdownTarget): number {
-    if (a.side !== b.side) {
-      return a.side === "left" ? -1 : 1;
-    }
-
-    return this.collator.compare(a.displayName, b.displayName);
   }
 
   private getSelectedEditorRanges(editor: Editor): SelectedEditorRange[] {
@@ -895,12 +763,6 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    if (!this.shouldHandleWheelEvent(event, direction)) {
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-
     const { scrollEl, contentEl } = scrollContext;
     const currentTop = scrollEl.scrollTop;
     const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
@@ -911,6 +773,12 @@ export default class PageModePlugin extends Plugin {
     const shouldOpenPreviousFile = direction < 0 && atTop;
 
     if (!shouldOpenNextFile && !shouldOpenPreviousFile && !this.settings.pageUnitScroll) {
+      return;
+    }
+
+    if (!this.shouldHandleWheelEvent(event, direction)) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
