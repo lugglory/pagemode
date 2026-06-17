@@ -25,10 +25,12 @@ const INLINE_TITLE_AREA_PADDING_PX = 8;
 
 interface PageModeSettings {
   pageUnitScroll: boolean;
+  hiddenPaths: string[];
 }
 
 const DEFAULT_SETTINGS: PageModeSettings = {
   pageUnitScroll: true,
+  hiddenPaths: [],
 };
 
 type ContentLineRect = {
@@ -70,12 +72,18 @@ type MarkdownViewTarget = {
   distance: number;
 };
 
+type MarkdownFileTarget = {
+  file: TFile;
+  displayName: string;
+};
+
 export default class PageModePlugin extends Plugin {
   settings: PageModeSettings = { ...DEFAULT_SETTINGS };
 
   private openingFile = false;
   private draggedEditorSelection: DraggedEditorSelection | null = null;
-  private extractRightActionViews = new WeakSet<MarkdownView>();
+  private markdownActionViews = new WeakSet<MarkdownView>();
+  private hiddenFileExplorerStyleEl: HTMLStyleElement | null = null;
   private trackpadAccumulatedDelta = 0;
   private trackpadGestureLocked = false;
   private trackpadIdleTimer: number | null = null;
@@ -87,6 +95,7 @@ export default class PageModePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.addSettingTab(new PageModeSettingTab(this.app, this));
+    this.updateHiddenFileExplorerStyles();
 
     this.addCommand({
       id: "open-next-file-in-folder",
@@ -136,14 +145,6 @@ export default class PageModePlugin extends Plugin {
       },
     });
 
-    this.addRibbonIcon("skip-forward", "Open next Markdown file", () => {
-      void this.openNextMarkdownFile(true);
-    });
-
-    this.addRibbonIcon("skip-back", "Open previous Markdown file", () => {
-      void this.openPreviousMarkdownFile(true);
-    });
-
     this.registerDomEvent(
       activeDocument,
       "wheel",
@@ -173,29 +174,30 @@ export default class PageModePlugin extends Plugin {
 
     this.register(() => {
       this.clearTrackpadIdleTimer();
+      this.hiddenFileExplorerStyleEl?.remove();
+      this.hiddenFileExplorerStyleEl = null;
     });
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof TFolder)) {
-          return;
+        if (file instanceof TFolder) {
+          menu.addItem((item) => {
+            item
+              .setTitle("Move current file here")
+              .setIcon("folder-input")
+              .setSection("open")
+              .onClick(() => {
+                void this.moveCurrentFileToFolder(file);
+              });
+          });
         }
 
-        menu.addItem((item) => {
-          item
-            .setTitle("Move current file here")
-            .setIcon("folder-input")
-            .setSection("open")
-            .onClick(() => {
-              void this.moveCurrentFileToFolder(file);
-            });
-        });
+        this.addHideFromPageModeMenuItem(menu, file);
       }),
     );
 
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, info) => {
-        this.addExtractSelectionMenuItems(menu, editor, info.file);
         this.addSendToRightDocumentMenuItem(menu, editor, info.file);
       }),
     );
@@ -207,18 +209,18 @@ export default class PageModePlugin extends Plugin {
     );
 
     this.app.workspace.onLayoutReady(() => {
-      this.addExtractRightActions();
+      this.addMarkdownViewActions();
     });
 
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
-        this.addExtractRightActions();
+        this.addMarkdownViewActions();
       }),
     );
 
     this.registerEvent(
       this.app.workspace.on("file-open", () => {
-        this.addExtractRightActions();
+        this.addMarkdownViewActions();
       }),
     );
   }
@@ -232,14 +234,110 @@ export default class PageModePlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
+    const loadedData = await this.loadData();
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...(await this.loadData()),
+      ...loadedData,
+      hiddenPaths: this.normalizeHiddenPaths(loadedData?.hiddenPaths),
     };
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.updateHiddenFileExplorerStyles();
+  }
+
+  private addHideFromPageModeMenuItem(menu: Menu, file: TAbstractFile): void {
+    if (!(file instanceof TFile || file instanceof TFolder) || file.path === "/") {
+      return;
+    }
+
+    menu.addItem((item) => {
+      item.setTitle("Hide from PageMode").setIcon("eye-off").setSection("open");
+
+      if (this.isHiddenPath(file.path, this.getHiddenPathSet())) {
+        item.setDisabled(true);
+        return;
+      }
+
+      item.onClick(() => {
+        void this.hidePath(file.path);
+      });
+    });
+  }
+
+  async hidePath(path: string): Promise<void> {
+    const normalizedPath = normalizePath(path);
+    const hiddenPaths = this.getHiddenPathSet();
+
+    if (this.isHiddenPath(normalizedPath, hiddenPaths)) {
+      new Notice("Already hidden from PageMode.");
+      return;
+    }
+
+    const nextHiddenPaths = this.settings.hiddenPaths.filter(
+      (hiddenPath) => !hiddenPath.startsWith(`${normalizedPath}/`),
+    );
+    nextHiddenPaths.push(normalizedPath);
+    this.settings.hiddenPaths = this.normalizeHiddenPaths(nextHiddenPaths);
+    await this.saveSettings();
+    new Notice(`Hidden from PageMode: ${normalizedPath}`);
+  }
+
+  async unhidePath(path: string): Promise<void> {
+    const normalizedPath = normalizePath(path);
+    this.settings.hiddenPaths = this.normalizeHiddenPaths(
+      this.settings.hiddenPaths.filter((hiddenPath) => hiddenPath !== normalizedPath),
+    );
+    await this.saveSettings();
+  }
+
+  private normalizeHiddenPaths(paths: unknown): string[] {
+    if (!Array.isArray(paths)) {
+      return [];
+    }
+
+    const normalizedPaths = paths
+      .filter((path): path is string => typeof path === "string" && path.trim().length > 0)
+      .map((path) => normalizePath(path.trim()))
+      .filter((path) => path !== "/")
+      .sort((a, b) => this.collator.compare(a, b));
+
+    const result: string[] = [];
+    for (const path of normalizedPaths) {
+      if (!result.some((existingPath) => path === existingPath || path.startsWith(`${existingPath}/`))) {
+        result.push(path);
+      }
+    }
+
+    return result;
+  }
+
+  private updateHiddenFileExplorerStyles(): void {
+    if (!this.hiddenFileExplorerStyleEl) {
+      this.hiddenFileExplorerStyleEl = activeDocument.createElement("style");
+      this.hiddenFileExplorerStyleEl.setAttr("data-pagemode-hidden-files", "");
+      activeDocument.head.appendChild(this.hiddenFileExplorerStyleEl);
+    }
+
+    const selectors = this.settings.hiddenPaths.flatMap((path) => {
+      const dataPath = this.getCssString(path);
+      return [
+        `.workspace-leaf-content[data-type="file-explorer"] .nav-file:has(.nav-file-title[data-path=${dataPath}])`,
+        `.workspace-leaf-content[data-type="file-explorer"] .nav-folder:has(.nav-folder-title[data-path=${dataPath}])`,
+      ];
+    });
+
+    this.hiddenFileExplorerStyleEl.textContent =
+      selectors.length > 0 ? `${selectors.join(",\n")} {\n  display: none !important;\n}\n` : "";
+  }
+
+  private getCssString(value: string): string {
+    return JSON.stringify(value);
+  }
+
+  private getHiddenPathSet(): Set<string> {
+    return new Set(this.settings.hiddenPaths);
   }
 
   private handleDragStart(event: DragEvent): void {
@@ -342,9 +440,10 @@ export default class PageModePlugin extends Plugin {
     }
 
     const ranges = this.getSelectedEditorRanges(editor);
-    const target = PageModePlugin.isMarkdownFile(sourceFile)
-      ? this.getNearestRightMarkdownTarget(sourceView, sourceFile)
-      : null;
+    if (!PageModePlugin.isMarkdownFile(sourceFile)) {
+      return;
+    }
+
     const title =
       ranges.length > 0
         ? "Send selection to right document"
@@ -352,14 +451,7 @@ export default class PageModePlugin extends Plugin {
 
     menu.addSeparator();
     menu.addItem((item) => {
-      item.setTitle(title).setIcon("panel-left-open");
-
-      if (!target) {
-        item.setDisabled(true);
-        return;
-      }
-
-      item.onClick(() => {
+      item.setTitle(title).setIcon("panel-left-open").onClick(() => {
         void this.extractSelectionToRightDocument(editor, sourceFile, sourceView);
       });
     });
@@ -393,17 +485,17 @@ export default class PageModePlugin extends Plugin {
     await this.extractSelectionToSidebarFile(editor, this.getSelectedEditorRanges(editor), targets[0].file);
   }
 
-  private addExtractRightActions(): void {
+  private addMarkdownViewActions(): void {
     this.app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
-      if (!(view instanceof MarkdownView) || this.extractRightActionViews.has(view)) {
+      if (!(view instanceof MarkdownView) || this.markdownActionViews.has(view)) {
         return;
       }
 
       view.addAction("panel-left-open", "Send selection or file to right document", () => {
         void this.extractSelectionToRightDocumentFromView(view);
       });
-      this.extractRightActionViews.add(view);
+      this.markdownActionViews.add(view);
     });
   }
 
@@ -416,8 +508,7 @@ export default class PageModePlugin extends Plugin {
       sourceView instanceof MarkdownView &&
       sourceView.getMode() === "source" &&
       sourceFile !== null &&
-      PageModePlugin.isMarkdownFile(sourceFile) &&
-      this.getNearestRightMarkdownTarget(sourceView, sourceFile) !== null
+      PageModePlugin.isMarkdownFile(sourceFile)
     );
   }
 
@@ -456,9 +547,9 @@ export default class PageModePlugin extends Plugin {
     sourceView: MarkdownView,
   ): Promise<void> {
     const ranges = this.getSelectedEditorRanges(editor);
-    const target = this.getNearestRightMarkdownTarget(sourceView, sourceFile);
+    const target = await this.getOrCreateRightMarkdownTarget(sourceView, sourceFile);
     if (!target) {
-      new Notice("No Markdown document open to the right.");
+      new Notice("No Markdown document available on the right.");
       return;
     }
 
@@ -468,6 +559,38 @@ export default class PageModePlugin extends Plugin {
     }
 
     await this.extractSelectionToSidebarFile(editor, ranges, target.file);
+  }
+
+  private async getOrCreateRightMarkdownTarget(
+    sourceView: MarkdownView,
+    sourceFile: TFile,
+  ): Promise<MarkdownFileTarget | null> {
+    const existingTarget = this.getNearestRightMarkdownTarget(sourceView, sourceFile);
+    if (existingTarget) {
+      return existingTarget;
+    }
+
+    try {
+      const file = await this.createRootMarkdownFile();
+      const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true);
+      if (!leaf) {
+        new Notice("No right sidebar available.");
+        return { file, displayName: file.basename };
+      }
+
+      await leaf.openFile(file, { active: false });
+      return { file, displayName: file.basename };
+    } catch (error) {
+      console.error("Failed to create right Markdown document", error);
+      new Notice("Failed to create a right document.");
+      return null;
+    }
+  }
+
+  private async createRootMarkdownFile(): Promise<TFile> {
+    const root = this.app.vault.getRoot();
+    const path = this.getAvailableFilePath(root, "Untitled.md");
+    return this.app.vault.create(path, "");
   }
 
   private async moveWholeFileToRightDocument(sourceFile: TFile, targetFile: TFile): Promise<void> {
@@ -1134,7 +1257,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const files = this.getFilesInVaultDfsOrder();
+    const files = this.getMarkdownFilesInNavigationOrder();
     const file = direction > 0 ? files[0] : files[files.length - 1];
     if (!file) {
       if (showNotice) {
@@ -1187,7 +1310,7 @@ export default class PageModePlugin extends Plugin {
   }
 
   private getAdjacentMarkdownFile(currentFile: TFile, offset: -1 | 1): TFile | null {
-    const files = this.getFilesInVaultDfsOrder();
+    const files = this.getMarkdownFilesInNavigationOrder();
 
     const index = files.findIndex((file) => file.path === currentFile.path);
     const adjacentIndex = index + offset;
@@ -1198,13 +1321,25 @@ export default class PageModePlugin extends Plugin {
     return files[adjacentIndex];
   }
 
-  private getFilesInVaultDfsOrder(): TFile[] {
+  private getMarkdownFilesInNavigationOrder(): TFile[] {
+    return this.getFilesInVaultDfsOrder(this.getHiddenPathSet());
+  }
+
+  private getFilesInVaultDfsOrder(hiddenPaths = new Set<string>()): TFile[] {
     const files: TFile[] = [];
 
     const visitFolder = (folder: TFolder): void => {
+      if (this.isHiddenPath(folder.path, hiddenPaths)) {
+        return;
+      }
+
       const children = [...folder.children].sort((a, b) => this.compareAbstractFiles(a, b));
 
       for (const child of children) {
+        if (this.isHiddenPath(child.path, hiddenPaths)) {
+          continue;
+        }
+
         if (child instanceof TFolder) {
           visitFolder(child);
         } else if (child instanceof TFile && PageModePlugin.isMarkdownFile(child)) {
@@ -1215,6 +1350,16 @@ export default class PageModePlugin extends Plugin {
 
     visitFolder(this.app.vault.getRoot());
     return files;
+  }
+
+  private isHiddenPath(path: string, hiddenPaths: Set<string>): boolean {
+    for (const hiddenPath of hiddenPaths) {
+      if (path === hiddenPath || path.startsWith(`${hiddenPath}/`)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private compareAbstractFiles(a: TAbstractFile, b: TAbstractFile): number {
@@ -1257,10 +1402,15 @@ export default class PageModePlugin extends Plugin {
   }
 
   private getAvailablePath(targetFolder: TFolder, file: TFile): string {
-    const extension = file.extension ? `.${file.extension}` : "";
-    const baseName = file.basename;
+    return this.getAvailableFilePath(targetFolder, file.name);
+  }
 
-    let candidateName = file.name;
+  private getAvailableFilePath(targetFolder: TFolder, fileName: string): string {
+    const extensionMatch = fileName.match(/(\.[^.]*)$/);
+    const extension = extensionMatch?.[1] ?? "";
+    const baseName = extension ? fileName.slice(0, -extension.length) : fileName;
+
+    let candidateName = fileName;
     let candidatePath = this.joinPath(targetFolder, candidateName);
     let index = 1;
 
@@ -1303,5 +1453,26 @@ class PageModeSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
+
+    new Setting(containerEl).setName("Hidden files and folders").setDesc("Items hidden from File explorer and PageMode navigation.");
+
+    if (this.plugin.settings.hiddenPaths.length === 0) {
+      new Setting(containerEl).setName("No hidden items");
+      return;
+    }
+
+    for (const path of this.plugin.settings.hiddenPaths) {
+      new Setting(containerEl)
+        .setName(path)
+        .addExtraButton((button) => {
+          button
+            .setIcon("x")
+            .setTooltip("Remove from hidden items")
+            .onClick(async () => {
+              await this.plugin.unhidePath(path);
+              this.display();
+            });
+        });
+    }
   }
 }
