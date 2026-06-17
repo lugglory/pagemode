@@ -1,7 +1,10 @@
 import {
+  App,
   MarkdownView,
   Notice,
   Plugin,
+  PluginSettingTab,
+  Setting,
   TAbstractFile,
   TFile,
   TFolder,
@@ -18,6 +21,15 @@ const MIN_PAGE_ADVANCE_PX = 4;
 const MOUSE_WHEEL_DELTA_THRESHOLD = 80;
 const TRACKPAD_DELTA_THRESHOLD = 60;
 const TRACKPAD_IDLE_MS = 160;
+const INLINE_TITLE_AREA_PADDING_PX = 8;
+
+interface PageModeSettings {
+  pageUnitScroll: boolean;
+}
+
+const DEFAULT_SETTINGS: PageModeSettings = {
+  pageUnitScroll: true,
+};
 
 type ContentLineRect = {
   top: number;
@@ -52,9 +64,18 @@ type DraggedEditorSelection = {
   ranges: SelectedEditorRange[];
 };
 
+type MarkdownViewTarget = {
+  file: TFile;
+  displayName: string;
+  distance: number;
+};
+
 export default class PageModePlugin extends Plugin {
+  settings: PageModeSettings = { ...DEFAULT_SETTINGS };
+
   private openingFile = false;
   private draggedEditorSelection: DraggedEditorSelection | null = null;
+  private extractRightActionViews = new WeakSet<MarkdownView>();
   private trackpadAccumulatedDelta = 0;
   private trackpadGestureLocked = false;
   private trackpadIdleTimer: number | null = null;
@@ -63,7 +84,10 @@ export default class PageModePlugin extends Plugin {
     sensitivity: "base",
   });
 
-  onload(): void {
+  async onload(): Promise<void> {
+    await this.loadSettings();
+    this.addSettingTab(new PageModeSettingTab(this.app, this));
+
     this.addCommand({
       id: "open-next-file-in-folder",
       name: "Open next Markdown file",
@@ -90,6 +114,22 @@ export default class PageModePlugin extends Plugin {
 
         if (!checking) {
           void this.extractSelectionToSidebarCommand(editor, info.file);
+        }
+
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "send-selection-or-file-to-nearest-right-document",
+      name: "Send selection or file to nearest right document",
+      editorCheckCallback: (checking, editor, info) => {
+        if (!this.canSendToRightDocument(editor, info.file)) {
+          return false;
+        }
+
+        if (!checking) {
+          void this.extractSelectionToRightDocumentCommand(editor, info.file);
         }
 
         return true;
@@ -156,12 +196,29 @@ export default class PageModePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, info) => {
         this.addExtractSelectionMenuItems(menu, editor, info.file);
+        this.addSendToRightDocumentMenuItem(menu, editor, info.file);
       }),
     );
 
     this.registerEvent(
       this.app.workspace.on("editor-drop", (event, editor, info) => {
         this.handleEditorDrop(event, editor, info.file);
+      }),
+    );
+
+    this.app.workspace.onLayoutReady(() => {
+      this.addExtractRightActions();
+    });
+
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.addExtractRightActions();
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        this.addExtractRightActions();
       }),
     );
   }
@@ -172,6 +229,17 @@ export default class PageModePlugin extends Plugin {
 
   private isHTMLElement(target: Node | null): target is HTMLElement {
     return target?.instanceOf(HTMLElement) === true;
+  }
+
+  async loadSettings(): Promise<void> {
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...(await this.loadData()),
+    };
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
   }
 
   private handleDragStart(event: DragEvent): void {
@@ -267,6 +335,36 @@ export default class PageModePlugin extends Plugin {
     }
   }
 
+  private addSendToRightDocumentMenuItem(menu: Menu, editor: Editor, sourceFile: TFile | null): void {
+    const sourceView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!(sourceView instanceof MarkdownView) || sourceView.getMode() !== "source" || !sourceFile) {
+      return;
+    }
+
+    const ranges = this.getSelectedEditorRanges(editor);
+    const target = PageModePlugin.isMarkdownFile(sourceFile)
+      ? this.getNearestRightMarkdownTarget(sourceView, sourceFile)
+      : null;
+    const title =
+      ranges.length > 0
+        ? "Send selection to right document"
+        : "Send current file to right document";
+
+    menu.addSeparator();
+    menu.addItem((item) => {
+      item.setTitle(title).setIcon("panel-left-open");
+
+      if (!target) {
+        item.setDisabled(true);
+        return;
+      }
+
+      item.onClick(() => {
+        void this.extractSelectionToRightDocument(editor, sourceFile, sourceView);
+      });
+    });
+  }
+
   private canExtractSelectionToSidebar(editor: Editor, sourceFile: TFile | null): sourceFile is TFile {
     return (
       sourceFile !== null &&
@@ -293,6 +391,104 @@ export default class PageModePlugin extends Plugin {
     }
 
     await this.extractSelectionToSidebarFile(editor, this.getSelectedEditorRanges(editor), targets[0].file);
+  }
+
+  private addExtractRightActions(): void {
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || this.extractRightActionViews.has(view)) {
+        return;
+      }
+
+      view.addAction("panel-left-open", "Send selection or file to right document", () => {
+        void this.extractSelectionToRightDocumentFromView(view);
+      });
+      this.extractRightActionViews.add(view);
+    });
+  }
+
+  private canSendToRightDocument(
+    editor: Editor,
+    sourceFile: TFile | null,
+    sourceView = this.app.workspace.getActiveViewOfType(MarkdownView),
+  ): sourceFile is TFile {
+    return (
+      sourceView instanceof MarkdownView &&
+      sourceView.getMode() === "source" &&
+      sourceFile !== null &&
+      PageModePlugin.isMarkdownFile(sourceFile) &&
+      this.getNearestRightMarkdownTarget(sourceView, sourceFile) !== null
+    );
+  }
+
+  private async extractSelectionToRightDocumentCommand(editor: Editor, sourceFile: TFile | null): Promise<void> {
+    const sourceView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!(sourceView instanceof MarkdownView) || sourceView.getMode() !== "source") {
+      new Notice("Switch to editing view to extract selected text.");
+      return;
+    }
+
+    if (!sourceFile || !PageModePlugin.isMarkdownFile(sourceFile)) {
+      new Notice("No active Markdown file.");
+      return;
+    }
+
+    await this.extractSelectionToRightDocument(editor, sourceFile, sourceView);
+  }
+
+  private async extractSelectionToRightDocumentFromView(sourceView: MarkdownView): Promise<void> {
+    if (sourceView.getMode() !== "source") {
+      new Notice("Switch to editing view to extract selected text.");
+      return;
+    }
+
+    if (!sourceView.file || !PageModePlugin.isMarkdownFile(sourceView.file)) {
+      new Notice("No active Markdown file.");
+      return;
+    }
+
+    await this.extractSelectionToRightDocument(sourceView.editor, sourceView.file, sourceView);
+  }
+
+  private async extractSelectionToRightDocument(
+    editor: Editor,
+    sourceFile: TFile,
+    sourceView: MarkdownView,
+  ): Promise<void> {
+    const ranges = this.getSelectedEditorRanges(editor);
+    const target = this.getNearestRightMarkdownTarget(sourceView, sourceFile);
+    if (!target) {
+      new Notice("No Markdown document open to the right.");
+      return;
+    }
+
+    if (ranges.length === 0) {
+      await this.moveWholeFileToRightDocument(sourceFile, target.file);
+      return;
+    }
+
+    await this.extractSelectionToSidebarFile(editor, ranges, target.file);
+  }
+
+  private async moveWholeFileToRightDocument(sourceFile: TFile, targetFile: TFile): Promise<void> {
+    try {
+      const content = await this.app.vault.read(sourceFile);
+      await this.appendTextToFile(targetFile, this.getWholeFileExtractedText(sourceFile, content));
+      await this.app.vault.trash(sourceFile, false);
+      new Notice(`Moved ${sourceFile.basename} to ${targetFile.basename}.`);
+    } catch (error) {
+      console.error("Failed to move whole file to right document", error);
+      new Notice("Failed to move file to right document.");
+    }
+  }
+
+  private getWholeFileExtractedText(file: TFile, content: string): string {
+    const body = this.trimBoundaryNewlines(content);
+    if (!body) {
+      return `# ${file.basename}`;
+    }
+
+    return `# ${file.basename}\n\n${body}`;
   }
 
   private async extractSelectionToSidebarFile(editor: Editor, ranges: SelectedEditorRange[], targetFile: TFile): Promise<void> {
@@ -355,6 +551,69 @@ export default class PageModePlugin extends Plugin {
       side,
       displayName: view.file.basename,
     });
+  }
+
+  private getNearestRightMarkdownTarget(sourceView: MarkdownView, sourceFile: TFile): MarkdownViewTarget | null {
+    const sourceRect = this.getVisibleViewRect(sourceView);
+    if (!sourceRect) {
+      return null;
+    }
+
+    const sourceCenterX = this.getRectCenterX(sourceRect);
+    const targets: MarkdownViewTarget[] = [];
+
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (
+        !(view instanceof MarkdownView) ||
+        view === sourceView ||
+        !view.file ||
+        !PageModePlugin.isMarkdownFile(view.file) ||
+        view.file.path === sourceFile.path
+      ) {
+        return;
+      }
+
+      const targetRect = this.getVisibleViewRect(view);
+      if (!targetRect || this.getRectCenterX(targetRect) <= sourceCenterX + LINE_BOUNDARY_EPSILON_PX) {
+        return;
+      }
+
+      const horizontalGap = Math.max(0, targetRect.left - sourceRect.right);
+      const verticalGap = this.getVerticalGap(sourceRect, targetRect);
+      targets.push({
+        file: view.file,
+        displayName: view.file.basename,
+        distance: horizontalGap * horizontalGap + verticalGap * verticalGap,
+      });
+    });
+
+    return targets.sort((a, b) => a.distance - b.distance || this.collator.compare(a.displayName, b.displayName))[0] ?? null;
+  }
+
+  private getVisibleViewRect(view: MarkdownView): DOMRect | null {
+    const rect = view.containerEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return null;
+    }
+
+    return rect;
+  }
+
+  private getRectCenterX(rect: DOMRect): number {
+    return rect.left + rect.width / 2;
+  }
+
+  private getVerticalGap(a: DOMRect, b: DOMRect): number {
+    if (b.bottom < a.top) {
+      return a.top - b.bottom;
+    }
+
+    if (b.top > a.bottom) {
+      return b.top - a.bottom;
+    }
+
+    return 0;
   }
 
   private compareSidebarTargets(a: SidebarMarkdownTarget, b: SidebarMarkdownTarget): number {
@@ -473,12 +732,22 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const target = event.targetNode;
-    if (!target || !view.containerEl.contains(target)) {
+    if (!this.isMainWorkspaceView(view)) {
       return;
     }
 
-    if (this.isInlineTitleTarget(target)) {
+    const target = event.targetNode;
+    if (!target || !this.isTargetInActiveMainWorkspaceTab(target, view)) {
+      return;
+    }
+
+    if (this.isAdjacentFileNavigationTarget(target, view)) {
+      if (!this.shouldHandleWheelEvent(event, direction)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       event.preventDefault();
       event.stopPropagation();
       await this.openAdjacentMarkdownFile(direction > 0 ? 1 : -1, false);
@@ -487,6 +756,19 @@ export default class PageModePlugin extends Plugin {
 
     const scrollContext = this.getPageScrollContext(view);
     if (!scrollContext || !scrollContext.scrollEl.contains(target)) {
+      return;
+    }
+
+    if (this.isInlineTitleArea(event, view, scrollContext)) {
+      if (!this.shouldHandleWheelEvent(event, direction)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      await this.openAdjacentMarkdownFile(direction > 0 ? 1 : -1, false);
       return;
     }
 
@@ -502,25 +784,81 @@ export default class PageModePlugin extends Plugin {
     const atTop = currentTop <= SCROLL_EDGE_TOLERANCE_PX;
     const atBottom = currentTop + SCROLL_EDGE_TOLERANCE_PX >= maxScrollTop;
     const lastContentLineFullyVisible = mode === "preview" && this.isLastContentLineFullyVisible(scrollEl, contentEl);
-    const nextTop = this.getNextPageTop(scrollEl, contentEl, direction, maxScrollTop);
+    const shouldOpenNextFile = direction > 0 && (atBottom || lastContentLineFullyVisible);
+    const shouldOpenPreviousFile = direction < 0 && atTop;
+
+    if (!shouldOpenNextFile && !shouldOpenPreviousFile && !this.settings.pageUnitScroll) {
+      return;
+    }
 
     event.preventDefault();
     event.stopPropagation();
 
-    if (direction > 0 && (atBottom || lastContentLineFullyVisible)) {
+    if (shouldOpenNextFile) {
       await this.openNextMarkdownFile(false);
       return;
     }
 
-    if (direction < 0 && atTop) {
+    if (shouldOpenPreviousFile) {
       await this.openPreviousMarkdownFile(false);
       return;
     }
 
+    const nextTop = this.getNextPageTop(scrollEl, contentEl, direction, maxScrollTop);
     scrollEl.scrollTo({
       top: nextTop,
       behavior: "auto",
     });
+  }
+
+  private isMainWorkspaceView(view: MarkdownView): boolean {
+    return this.isMainWorkspaceTarget(view.containerEl);
+  }
+
+  private isTargetInActiveMainWorkspaceTab(target: Node, view: MarkdownView): boolean {
+    if (!target.instanceOf(Element)) {
+      return view.containerEl.contains(target);
+    }
+
+    const viewTabsEl = view.containerEl.closest(".workspace-tabs");
+    return viewTabsEl !== null && target.closest(".workspace-tabs") === viewTabsEl;
+  }
+
+  private isAdjacentFileNavigationTarget(target: Node, view: MarkdownView): boolean {
+    if (!target.instanceOf(Element)) {
+      return false;
+    }
+
+    if (this.isInlineTitleTarget(target)) {
+      return true;
+    }
+
+    if (!this.isTargetInActiveMainWorkspaceTab(target, view)) {
+      return false;
+    }
+
+    const tabHeaderEl = target.closest(".workspace-tab-header");
+    if (tabHeaderEl) {
+      return tabHeaderEl.hasClass("is-active");
+    }
+
+    return target.closest(".workspace-tab-header-container, .view-header") !== null;
+  }
+
+  private isInlineTitleArea(event: WheelEvent, view: MarkdownView, scrollContext: PageScrollContext): boolean {
+    const inlineTitleEl = view.containerEl.querySelector<HTMLElement>(".inline-title");
+    if (!inlineTitleEl) {
+      return false;
+    }
+
+    const scrollRect = scrollContext.scrollEl.getBoundingClientRect();
+    const titleRect = inlineTitleEl.getBoundingClientRect();
+    return (
+      event.clientY >= scrollRect.top &&
+      event.clientY <= titleRect.bottom + INLINE_TITLE_AREA_PADDING_PX &&
+      event.clientX >= scrollRect.left &&
+      event.clientX <= scrollRect.right
+    );
   }
 
   private getPageScrollContext(view: MarkdownView): PageScrollContext | null {
@@ -941,5 +1279,29 @@ export default class PageModePlugin extends Plugin {
     }
 
     return normalizePath(`${folder.path}/${fileName}`);
+  }
+}
+
+class PageModeSettingTab extends PluginSettingTab {
+  constructor(
+    app: App,
+    private plugin: PageModePlugin,
+  ) {
+    super(app, plugin);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("Page-unit scrolling")
+      .setDesc("Use one wheel or trackpad gesture to jump by a page in main document tabs.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.pageUnitScroll).onChange(async (value) => {
+          this.plugin.settings.pageUnitScroll = value;
+          await this.plugin.saveSettings();
+        });
+      });
   }
 }
