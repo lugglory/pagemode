@@ -28,6 +28,11 @@ interface PageModeSettings {
   hiddenPaths: string[];
 }
 
+type LoadedPageModeSettings = {
+  pageUnitScroll?: boolean;
+  hiddenPaths?: unknown;
+};
+
 const DEFAULT_SETTINGS: PageModeSettings = {
   pageUnitScroll: true,
   hiddenPaths: [],
@@ -182,6 +187,10 @@ export default class PageModePlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("editor-drop", (event, editor, info) => {
+        if (event.defaultPrevented) {
+          return;
+        }
+
         this.handleEditorDrop(event, editor, info.file);
       }),
     );
@@ -211,11 +220,26 @@ export default class PageModePlugin extends Plugin {
     return target?.instanceOf(HTMLElement) === true;
   }
 
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+  }
+
+  private parseLoadedSettings(value: unknown): LoadedPageModeSettings {
+    if (!this.isRecord(value)) {
+      return {};
+    }
+
+    return {
+      pageUnitScroll: typeof value.pageUnitScroll === "boolean" ? value.pageUnitScroll : undefined,
+      hiddenPaths: value.hiddenPaths,
+    };
+  }
+
   async loadSettings(): Promise<void> {
-    const loadedData = await this.loadData();
+    const loadedData = this.parseLoadedSettings(await this.loadData());
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...loadedData,
+      pageUnitScroll: loadedData.pageUnitScroll ?? DEFAULT_SETTINGS.pageUnitScroll,
       hiddenPaths: this.normalizeHiddenPaths(loadedData?.hiddenPaths),
     };
   }
@@ -367,6 +391,7 @@ export default class PageModePlugin extends Plugin {
       }
 
       this.deleteEditorRanges(draggedSelection.editor, draggedSelection.ranges);
+      event.preventDefault();
     }, 0);
   }
 
@@ -493,7 +518,7 @@ export default class PageModePlugin extends Plugin {
     } catch (error) {
       if (file) {
         try {
-          await this.app.vault.trash(file, false);
+          await this.app.fileManager.trashFile(file);
         } catch (cleanupError) {
           console.error("Failed to clean up right Markdown document", cleanupError);
         }
@@ -514,7 +539,7 @@ export default class PageModePlugin extends Plugin {
     try {
       const content = await this.app.vault.read(sourceFile);
       await this.appendTextToFile(targetFile, this.getWholeFileExtractedText(sourceFile, content));
-      await this.app.vault.trash(sourceFile, false);
+      await this.app.fileManager.trashFile(sourceFile);
       new Notice(`Moved ${sourceFile.basename} to ${targetFile.basename}.`);
     } catch (error) {
       console.error("Failed to move whole file to right document", error);
@@ -993,6 +1018,12 @@ export default class PageModePlugin extends Plugin {
     this.trackpadIdleTimer = null;
   }
 
+  private resetTrackpadGesture(): void {
+    this.clearTrackpadIdleTimer();
+    this.trackpadAccumulatedDelta = 0;
+    this.trackpadGestureLocked = false;
+  }
+
   private getNextPageTop(
     scrollEl: HTMLElement,
     contentEl: HTMLElement,
@@ -1177,6 +1208,7 @@ export default class PageModePlugin extends Plugin {
     showNotice: boolean,
   ): Promise<void> {
     if (this.openingFile) {
+      this.resetTrackpadGesture();
       return;
     }
 
@@ -1196,6 +1228,7 @@ export default class PageModePlugin extends Plugin {
       console.error("Failed to open Markdown file", error);
       new Notice("Failed to open Markdown file.");
     } finally {
+      this.resetTrackpadGesture();
       this.openingFile = false;
     }
   }
@@ -1224,10 +1257,12 @@ export default class PageModePlugin extends Plugin {
     showNotice: boolean,
   ): Promise<void> {
     if (this.openingFile) {
+      this.resetTrackpadGesture();
       return;
     }
 
     if (!currentFile) {
+      this.resetTrackpadGesture();
       if (showNotice) {
         new Notice("No active file.");
       }
@@ -1236,6 +1271,7 @@ export default class PageModePlugin extends Plugin {
 
     const adjacentFile = this.getAdjacentMarkdownFile(currentFile, offset);
     if (!adjacentFile) {
+      this.resetTrackpadGesture();
       if (showNotice) {
         new Notice(offset > 0 ? "No next Markdown file in the vault." : "No previous Markdown file in the vault.");
       }
@@ -1249,6 +1285,7 @@ export default class PageModePlugin extends Plugin {
       console.error("Failed to open adjacent Markdown file", error);
       new Notice("Failed to open Markdown file.");
     } finally {
+      this.resetTrackpadGesture();
       this.openingFile = false;
     }
   }
