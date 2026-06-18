@@ -712,10 +712,6 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    if (this.openingFile) {
-      return;
-    }
-
     const direction = Math.sign(event.deltaY);
     if (direction === 0) {
       return;
@@ -747,7 +743,9 @@ export default class PageModePlugin extends Plugin {
 
     if (this.isAdjacentFileNavigationTarget(target, view)) {
       this.consumeWheelEvent(event);
-      await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
+      if (!this.openingFile) {
+        await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
+      }
       return;
     }
 
@@ -762,7 +760,9 @@ export default class PageModePlugin extends Plugin {
 
     if (this.isInlineTitleArea(event, view, scrollContext)) {
       this.consumeWheelEvent(event);
-      await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
+      if (!this.openingFile) {
+        await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
+      }
       return;
     }
 
@@ -776,18 +776,24 @@ export default class PageModePlugin extends Plugin {
     const shouldOpenPreviousFile = direction < 0 && atTop;
 
     if (!shouldOpenNextFile && !shouldOpenPreviousFile && !this.settings.pageUnitScroll) {
+      this.consumeWheelEvent(event);
+      this.scrollElementByWheelEvent(scrollEl, event);
       return;
     }
 
     this.consumeWheelEvent(event);
 
     if (shouldOpenNextFile) {
-      await this.openAdjacentMarkdownFileForView(view, 1, false);
+      if (!this.openingFile) {
+        await this.openAdjacentMarkdownFileForView(view, 1, false);
+      }
       return;
     }
 
     if (shouldOpenPreviousFile) {
-      await this.openAdjacentMarkdownFileForView(view, -1, false);
+      if (!this.openingFile) {
+        await this.openAdjacentMarkdownFileForView(view, -1, false);
+      }
       return;
     }
 
@@ -809,6 +815,26 @@ export default class PageModePlugin extends Plugin {
   private consumeWheelEvent(event: WheelEvent): void {
     event.preventDefault();
     event.stopPropagation();
+  }
+
+  private getWheelDeltaPx(delta: number, deltaMode: number, pageSize: number): number {
+    if (deltaMode === WheelEvent.DOM_DELTA_LINE) {
+      return delta * 16;
+    }
+
+    if (deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+      return delta * pageSize;
+    }
+
+    return delta;
+  }
+
+  private scrollElementByWheelEvent(scrollEl: HTMLElement, event: WheelEvent): void {
+    scrollEl.scrollBy({
+      left: this.getWheelDeltaPx(event.deltaX, event.deltaMode, scrollEl.clientWidth),
+      top: this.getWheelDeltaPx(event.deltaY, event.deltaMode, scrollEl.clientHeight),
+      behavior: "auto",
+    });
   }
 
   private getMarkdownViewForWheelTarget(target: Node): MarkdownView | null {
@@ -930,7 +956,9 @@ export default class PageModePlugin extends Plugin {
     }
 
     this.consumeWheelEvent(event);
-    await this.openBoundaryMarkdownFileInLeaf(leaf, direction > 0 ? 1 : -1, false);
+    if (!this.openingFile) {
+      await this.openBoundaryMarkdownFileInLeaf(leaf, direction > 0 ? 1 : -1, false);
+    }
   }
 
   private isMainWorkspaceTarget(target: HTMLElement): boolean {
