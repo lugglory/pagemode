@@ -714,19 +714,6 @@ export default class PageModePlugin extends Plugin {
     });
   }
 
-  private isKeyboardEventInView(event: KeyboardEvent, view: MarkdownView): boolean {
-    const target = event.targetNode;
-    if (!target) {
-      return true;
-    }
-
-    if (target === event.doc.body || target === event.doc.documentElement) {
-      return true;
-    }
-
-    return view.containerEl.contains(target);
-  }
-
   private async handleWheel(event: WheelEvent): Promise<void> {
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
       return;
@@ -737,14 +724,14 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const target = event.targetNode;
+    const target = this.getWheelEventTarget(event);
     if (!target) {
       return;
     }
 
     const view = this.getMarkdownViewForWheelTarget(target);
     if (!view) {
-      await this.handleWheelWithoutActiveFile(event, direction);
+      await this.handleWheelWithoutActiveFile(event, target, direction);
       return;
     }
 
@@ -763,31 +750,31 @@ export default class PageModePlugin extends Plugin {
 
     if (this.isAdjacentFileNavigationTarget(target, view)) {
       if (!this.shouldHandleWheelEvent(event, direction)) {
-        event.preventDefault();
-        event.stopPropagation();
+        this.consumeWheelEvent(event);
         return;
       }
 
-      event.preventDefault();
-      event.stopPropagation();
+      this.consumeWheelEvent(event);
       await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
       return;
     }
 
     const scrollContext = this.getPageScrollContext(view);
-    if (!scrollContext || !scrollContext.scrollEl.contains(target)) {
+    if (!scrollContext) {
+      return;
+    }
+
+    if (!scrollContext.scrollEl.contains(target)) {
       return;
     }
 
     if (this.isInlineTitleArea(event, view, scrollContext)) {
       if (!this.shouldHandleWheelEvent(event, direction)) {
-        event.preventDefault();
-        event.stopPropagation();
+        this.consumeWheelEvent(event);
         return;
       }
 
-      event.preventDefault();
-      event.stopPropagation();
+      this.consumeWheelEvent(event);
       await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
       return;
     }
@@ -806,13 +793,11 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (!this.shouldHandleWheelEvent(event, direction)) {
-      event.preventDefault();
-      event.stopPropagation();
+      this.consumeWheelEvent(event);
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
+    this.consumeWheelEvent(event);
 
     if (shouldOpenNextFile) {
       await this.openAdjacentMarkdownFileForView(view, 1, false);
@@ -833,6 +818,15 @@ export default class PageModePlugin extends Plugin {
 
   private isMainWorkspaceView(view: MarkdownView): boolean {
     return this.isMainWorkspaceTarget(view.containerEl);
+  }
+
+  private getWheelEventTarget(event: WheelEvent): Node | null {
+    return event.doc.elementFromPoint(event.clientX, event.clientY) ?? event.targetNode;
+  }
+
+  private consumeWheelEvent(event: WheelEvent): void {
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   private getMarkdownViewForWheelTarget(target: Node): MarkdownView | null {
@@ -943,8 +937,7 @@ export default class PageModePlugin extends Plugin {
     return target.instanceOf(Element) && target.closest(".inline-title") !== null;
   }
 
-  private async handleWheelWithoutActiveFile(event: WheelEvent, direction: number): Promise<void> {
-    const target = event.targetNode;
+  private async handleWheelWithoutActiveFile(event: WheelEvent, target: Node, direction: number): Promise<void> {
     if (!this.isHTMLElement(target) || !this.isMainWorkspaceTarget(target)) {
       return;
     }
@@ -955,13 +948,11 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (!this.shouldHandleWheelEvent(event, direction)) {
-      event.preventDefault();
-      event.stopPropagation();
+      this.consumeWheelEvent(event);
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
+    this.consumeWheelEvent(event);
     await this.openBoundaryMarkdownFileInLeaf(leaf, direction > 0 ? 1 : -1, false);
   }
 
