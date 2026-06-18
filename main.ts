@@ -12,6 +12,7 @@ import {
   type Editor,
   type EditorPosition,
   type Menu,
+  type WorkspaceLeaf,
 } from "obsidian";
 
 const SCROLL_EDGE_TOLERANCE_PX = 24;
@@ -712,7 +713,12 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const target = event.targetNode;
+    if (!target) {
+      return;
+    }
+
+    const view = this.getMarkdownViewForWheelTarget(target);
     if (!view) {
       await this.handleWheelWithoutActiveFile(event, direction);
       return;
@@ -727,8 +733,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const target = event.targetNode;
-    if (!target || !this.isTargetInActiveMainWorkspaceTab(target, view)) {
+    if (!this.isTargetInWorkspaceTab(target, view)) {
       return;
     }
 
@@ -741,7 +746,7 @@ export default class PageModePlugin extends Plugin {
 
       event.preventDefault();
       event.stopPropagation();
-      await this.openAdjacentMarkdownFile(direction > 0 ? 1 : -1, false);
+      await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
       return;
     }
 
@@ -759,7 +764,7 @@ export default class PageModePlugin extends Plugin {
 
       event.preventDefault();
       event.stopPropagation();
-      await this.openAdjacentMarkdownFile(direction > 0 ? 1 : -1, false);
+      await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
       return;
     }
 
@@ -786,12 +791,12 @@ export default class PageModePlugin extends Plugin {
     event.stopPropagation();
 
     if (shouldOpenNextFile) {
-      await this.openNextMarkdownFile(false);
+      await this.openAdjacentMarkdownFileForView(view, 1, false);
       return;
     }
 
     if (shouldOpenPreviousFile) {
-      await this.openPreviousMarkdownFile(false);
+      await this.openAdjacentMarkdownFileForView(view, -1, false);
       return;
     }
 
@@ -806,7 +811,48 @@ export default class PageModePlugin extends Plugin {
     return this.isMainWorkspaceTarget(view.containerEl);
   }
 
-  private isTargetInActiveMainWorkspaceTab(target: Node, view: MarkdownView): boolean {
+  private getMarkdownViewForWheelTarget(target: Node): MarkdownView | null {
+    const leaf = this.getWorkspaceLeafForTarget(target);
+    return leaf?.view instanceof MarkdownView ? leaf.view : null;
+  }
+
+  private getWorkspaceLeafForTarget(target: Node): WorkspaceLeaf | null {
+    const targetEl = target.instanceOf(Element) ? target : target.parentElement;
+    const targetTabsEl = targetEl?.closest(".workspace-tabs") ?? null;
+    let matchedLeaf: WorkspaceLeaf | null = null;
+    let fallbackLeaf: WorkspaceLeaf | null = null;
+
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (matchedLeaf) {
+        return;
+      }
+
+      const { containerEl } = leaf.view;
+      if (containerEl.contains(target)) {
+        matchedLeaf = leaf;
+        return;
+      }
+
+      if (targetTabsEl && containerEl.closest(".workspace-tabs") === targetTabsEl) {
+        const leafEl = containerEl.closest(".workspace-leaf");
+        if (this.isVisibleWorkspaceLeafContainer(containerEl) || leafEl?.hasClass("mod-active")) {
+          matchedLeaf = leaf;
+          return;
+        }
+
+        fallbackLeaf ??= leaf;
+      }
+    });
+
+    return matchedLeaf ?? fallbackLeaf;
+  }
+
+  private isVisibleWorkspaceLeafContainer(containerEl: HTMLElement): boolean {
+    const rect = containerEl.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  private isTargetInWorkspaceTab(target: Node, view: MarkdownView): boolean {
     if (!target.instanceOf(Element)) {
       return view.containerEl.contains(target);
     }
@@ -824,7 +870,7 @@ export default class PageModePlugin extends Plugin {
       return true;
     }
 
-    if (!this.isTargetInActiveMainWorkspaceTab(target, view)) {
+    if (!this.isTargetInWorkspaceTab(target, view)) {
       return false;
     }
 
@@ -874,12 +920,13 @@ export default class PageModePlugin extends Plugin {
   }
 
   private async handleWheelWithoutActiveFile(event: WheelEvent, direction: number): Promise<void> {
-    if (this.app.workspace.getActiveFile() || this.app.workspace.getLeaf(false).view.getViewType() !== "empty") {
+    const target = event.targetNode;
+    if (!this.isHTMLElement(target) || !this.isMainWorkspaceTarget(target)) {
       return;
     }
 
-    const target = event.targetNode;
-    if (!this.isHTMLElement(target) || !this.isMainWorkspaceTarget(target)) {
+    const leaf = this.getWorkspaceLeafForTarget(target);
+    if (!leaf || leaf.view.getViewType() !== "empty") {
       return;
     }
 
@@ -891,7 +938,7 @@ export default class PageModePlugin extends Plugin {
 
     event.preventDefault();
     event.stopPropagation();
-    await this.openBoundaryMarkdownFile(direction > 0 ? 1 : -1, false);
+    await this.openBoundaryMarkdownFileInLeaf(leaf, direction > 0 ? 1 : -1, false);
   }
 
   private isMainWorkspaceTarget(target: HTMLElement): boolean {
@@ -1121,6 +1168,14 @@ export default class PageModePlugin extends Plugin {
   }
 
   private async openBoundaryMarkdownFile(direction: -1 | 1, showNotice: boolean): Promise<void> {
+    await this.openBoundaryMarkdownFileInLeaf(this.app.workspace.getLeaf(false), direction, showNotice);
+  }
+
+  private async openBoundaryMarkdownFileInLeaf(
+    leaf: WorkspaceLeaf,
+    direction: -1 | 1,
+    showNotice: boolean,
+  ): Promise<void> {
     if (this.openingFile) {
       return;
     }
@@ -1136,7 +1191,7 @@ export default class PageModePlugin extends Plugin {
 
     this.openingFile = true;
     try {
-      await this.app.workspace.getLeaf(false).openFile(file, { active: true });
+      await leaf.openFile(file, { active: true });
     } catch (error) {
       console.error("Failed to open Markdown file", error);
       new Notice("Failed to open Markdown file.");
@@ -1146,11 +1201,32 @@ export default class PageModePlugin extends Plugin {
   }
 
   private async openAdjacentMarkdownFile(offset: -1 | 1, showNotice: boolean): Promise<void> {
+    await this.openAdjacentMarkdownFileInLeaf(
+      this.app.workspace.getActiveFile(),
+      this.app.workspace.getLeaf(false),
+      offset,
+      showNotice,
+    );
+  }
+
+  private async openAdjacentMarkdownFileForView(
+    view: MarkdownView,
+    offset: -1 | 1,
+    showNotice: boolean,
+  ): Promise<void> {
+    await this.openAdjacentMarkdownFileInLeaf(view.file, view.leaf, offset, showNotice);
+  }
+
+  private async openAdjacentMarkdownFileInLeaf(
+    currentFile: TFile | null,
+    leaf: WorkspaceLeaf,
+    offset: -1 | 1,
+    showNotice: boolean,
+  ): Promise<void> {
     if (this.openingFile) {
       return;
     }
 
-    const currentFile = this.app.workspace.getActiveFile();
     if (!currentFile) {
       if (showNotice) {
         new Notice("No active file.");
@@ -1168,7 +1244,7 @@ export default class PageModePlugin extends Plugin {
 
     this.openingFile = true;
     try {
-      await this.app.workspace.getLeaf(false).openFile(adjacentFile, { active: true });
+      await leaf.openFile(adjacentFile, { active: true });
     } catch (error) {
       console.error("Failed to open adjacent Markdown file", error);
       new Notice("Failed to open Markdown file.");
