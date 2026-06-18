@@ -18,9 +18,6 @@ import {
 const SCROLL_EDGE_TOLERANCE_PX = 24;
 const LINE_BOUNDARY_EPSILON_PX = 1;
 const MIN_PAGE_ADVANCE_PX = 4;
-const MOUSE_WHEEL_DELTA_THRESHOLD = 80;
-const TRACKPAD_DELTA_THRESHOLD = 60;
-const TRACKPAD_IDLE_MS = 160;
 const INLINE_TITLE_AREA_PADDING_PX = 8;
 
 interface PageModeSettings {
@@ -83,9 +80,6 @@ export default class PageModePlugin extends Plugin {
   private draggedEditorSelection: DraggedEditorSelection | null = null;
   private markdownActionViews = new WeakSet<MarkdownView>();
   private hiddenFileExplorerStyleEl: HTMLStyleElement | null = null;
-  private trackpadAccumulatedDelta = 0;
-  private trackpadGestureLocked = false;
-  private trackpadIdleTimer: number | null = null;
   private collator = new Intl.Collator(undefined, {
     numeric: true,
     sensitivity: "base",
@@ -156,7 +150,6 @@ export default class PageModePlugin extends Plugin {
     );
 
     this.register(() => {
-      this.clearTrackpadIdleTimer();
       this.hiddenFileExplorerStyleEl?.remove();
       this.hiddenFileExplorerStyleEl = null;
     });
@@ -753,10 +746,6 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (this.isAdjacentFileNavigationTarget(target, view)) {
-      if (!this.shouldRunWheelAction(event, direction)) {
-        return;
-      }
-
       this.consumeWheelEvent(event);
       await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
       return;
@@ -772,10 +761,6 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (this.isInlineTitleArea(event, view, scrollContext)) {
-      if (!this.shouldRunWheelAction(event, direction)) {
-        return;
-      }
-
       this.consumeWheelEvent(event);
       await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
       return;
@@ -791,10 +776,6 @@ export default class PageModePlugin extends Plugin {
     const shouldOpenPreviousFile = direction < 0 && atTop;
 
     if (!shouldOpenNextFile && !shouldOpenPreviousFile && !this.settings.pageUnitScroll) {
-      return;
-    }
-
-    if (!this.shouldRunWheelAction(event, direction)) {
       return;
     }
 
@@ -948,82 +929,12 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    if (!this.shouldRunWheelAction(event, direction)) {
-      return;
-    }
-
     this.consumeWheelEvent(event);
     await this.openBoundaryMarkdownFileInLeaf(leaf, direction > 0 ? 1 : -1, false);
   }
 
   private isMainWorkspaceTarget(target: HTMLElement): boolean {
     return target.closest(".workspace-split.mod-root") !== null && target.closest(".workspace-sidedock") === null;
-  }
-
-  private shouldRunWheelAction(event: WheelEvent, direction: number): boolean {
-    if (this.shouldHandleWheelEvent(event, direction)) {
-      return true;
-    }
-
-    if (!this.trackpadGestureLocked) {
-      this.consumeWheelEvent(event);
-    }
-
-    return false;
-  }
-
-  private shouldHandleWheelEvent(event: WheelEvent, direction: number): boolean {
-    if (!this.isLikelyTrackpadEvent(event)) {
-      return true;
-    }
-
-    this.scheduleTrackpadGestureReset();
-
-    if (this.trackpadGestureLocked) {
-      return false;
-    }
-
-    const accumulatedDirection = Math.sign(this.trackpadAccumulatedDelta);
-    if (accumulatedDirection !== 0 && accumulatedDirection !== direction) {
-      this.trackpadAccumulatedDelta = 0;
-    }
-
-    this.trackpadAccumulatedDelta += event.deltaY;
-
-    if (Math.abs(this.trackpadAccumulatedDelta) < TRACKPAD_DELTA_THRESHOLD) {
-      return false;
-    }
-
-    this.trackpadGestureLocked = true;
-    return true;
-  }
-
-  private isLikelyTrackpadEvent(event: WheelEvent): boolean {
-    return event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && Math.abs(event.deltaY) < MOUSE_WHEEL_DELTA_THRESHOLD;
-  }
-
-  private scheduleTrackpadGestureReset(): void {
-    this.clearTrackpadIdleTimer();
-    this.trackpadIdleTimer = window.setTimeout(() => {
-      this.trackpadAccumulatedDelta = 0;
-      this.trackpadGestureLocked = false;
-      this.trackpadIdleTimer = null;
-    }, TRACKPAD_IDLE_MS);
-  }
-
-  private clearTrackpadIdleTimer(): void {
-    if (this.trackpadIdleTimer === null) {
-      return;
-    }
-
-    window.clearTimeout(this.trackpadIdleTimer);
-    this.trackpadIdleTimer = null;
-  }
-
-  private resetTrackpadGesture(): void {
-    this.clearTrackpadIdleTimer();
-    this.trackpadAccumulatedDelta = 0;
-    this.trackpadGestureLocked = false;
   }
 
   private getNextPageTop(
@@ -1210,7 +1121,6 @@ export default class PageModePlugin extends Plugin {
     showNotice: boolean,
   ): Promise<void> {
     if (this.openingFile) {
-      this.resetTrackpadGesture();
       return;
     }
 
@@ -1230,7 +1140,6 @@ export default class PageModePlugin extends Plugin {
       console.error("Failed to open Markdown file", error);
       new Notice("Failed to open Markdown file.");
     } finally {
-      this.resetTrackpadGesture();
       this.openingFile = false;
     }
   }
@@ -1259,12 +1168,10 @@ export default class PageModePlugin extends Plugin {
     showNotice: boolean,
   ): Promise<void> {
     if (this.openingFile) {
-      this.resetTrackpadGesture();
       return;
     }
 
     if (!currentFile) {
-      this.resetTrackpadGesture();
       if (showNotice) {
         new Notice("No active file.");
       }
@@ -1273,7 +1180,6 @@ export default class PageModePlugin extends Plugin {
 
     const adjacentFile = this.getAdjacentMarkdownFile(currentFile, offset);
     if (!adjacentFile) {
-      this.resetTrackpadGesture();
       if (showNotice) {
         new Notice(offset > 0 ? "No next Markdown file in the vault." : "No previous Markdown file in the vault.");
       }
@@ -1287,7 +1193,6 @@ export default class PageModePlugin extends Plugin {
       console.error("Failed to open adjacent Markdown file", error);
       new Notice("Failed to open Markdown file.");
     } finally {
-      this.resetTrackpadGesture();
       this.openingFile = false;
     }
   }
