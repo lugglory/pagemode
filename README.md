@@ -1,11 +1,11 @@
 # PageMode
 
-PageMode is an Obsidian plugin for reading and organizing Markdown notes as a continuous sequence. It adds page-style wheel navigation, next/previous file movement, and small filing tools for reshaping notes without leaving the editor.
+PageMode is an Obsidian plugin for reading and organizing Markdown notes as a continuous sequence. It adds optional page-style wheel navigation, next/previous file movement, and small filing tools for reshaping notes without leaving the editor.
 
 ## Features
 
 - Scroll by page-sized steps in Markdown reading and editing views.
-- Continue scrolling past the bottom or top of a note to open the next or previous Markdown file.
+- With page-unit scrolling enabled, continue scrolling past the bottom or top of a note to open the next or previous Markdown file.
 - Use commands to open the next or previous Markdown file directly.
 - In editing view, send selected text to the nearest Markdown document on the right.
 - In editing view, send a whole file to the right document when no text is selected.
@@ -19,7 +19,7 @@ PageMode follows the vault's folder order when moving between Markdown files. Fi
 
 With page-unit scrolling enabled, wheel and trackpad gestures jump by one readable page instead of scrolling continuously. When you reach the end of a note, another scroll opens the next Markdown file. Scrolling upward from the top opens the previous Markdown file.
 
-With page-unit scrolling disabled, normal Obsidian scrolling is preserved. PageMode only steps in at the top and bottom of a note to move between files.
+With page-unit scrolling disabled, normal Obsidian content scrolling is preserved. Wheel and trackpad gestures in title, tab, and header areas still move between files.
 
 ## Moving Text And Files
 
@@ -40,7 +40,7 @@ Hidden paths can be restored from the PageMode settings tab.
 
 ## Settings
 
-- **Page-unit scrolling**: Toggle page-sized wheel and trackpad navigation.
+- **Page-unit scrolling**: Toggle page-sized content scrolling and edge-to-edge wheel navigation.
 - **Hidden files and folders**: Review and restore hidden paths.
 
 ## Manual Install

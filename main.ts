@@ -68,11 +68,6 @@ type MarkdownViewTarget = {
   distance: number;
 };
 
-type MarkdownFileTarget = {
-  file: TFile;
-  displayName: string;
-};
-
 export default class PageModePlugin extends Plugin {
   settings: PageModeSettings = { ...DEFAULT_SETTINGS };
 
@@ -110,7 +105,7 @@ export default class PageModePlugin extends Plugin {
       id: "send-selection-or-file-to-nearest-right-document",
       name: "Send selection or file to nearest right document",
       editorCheckCallback: (checking, editor, info) => {
-        if (!this.canSendToRightDocument(editor, info.file)) {
+        if (!this.canSendToRightDocument(info.file)) {
           return false;
         }
 
@@ -425,11 +420,8 @@ export default class PageModePlugin extends Plugin {
     });
   }
 
-  private canSendToRightDocument(
-    editor: Editor,
-    sourceFile: TFile | null,
-    sourceView = this.app.workspace.getActiveViewOfType(MarkdownView),
-  ): sourceFile is TFile {
+  private canSendToRightDocument(sourceFile: TFile | null): sourceFile is TFile {
+    const sourceView = this.app.workspace.getActiveViewOfType(MarkdownView);
     return (
       sourceView instanceof MarkdownView &&
       sourceView.getMode() === "source" &&
@@ -473,27 +465,27 @@ export default class PageModePlugin extends Plugin {
     sourceView: MarkdownView,
   ): Promise<void> {
     const ranges = this.getSelectedEditorRanges(editor);
-    const target = await this.getOrCreateRightMarkdownTarget(sourceView, sourceFile);
-    if (!target) {
+    const targetFile = await this.getOrCreateRightMarkdownTarget(sourceView, sourceFile);
+    if (!targetFile) {
       new Notice("No Markdown document available on the right.");
       return;
     }
 
     if (ranges.length === 0) {
-      await this.moveWholeFileToRightDocument(sourceFile, target.file);
+      await this.moveWholeFileToRightDocument(sourceFile, editor.getValue(), targetFile);
       return;
     }
 
-    await this.extractSelectionToMarkdownFile(editor, ranges, target.file);
+    await this.extractSelectionToMarkdownFile(editor, ranges, targetFile);
   }
 
   private async getOrCreateRightMarkdownTarget(
     sourceView: MarkdownView,
     sourceFile: TFile,
-  ): Promise<MarkdownFileTarget | null> {
+  ): Promise<TFile | null> {
     const existingTarget = this.getNearestRightMarkdownTarget(sourceView, sourceFile);
     if (existingTarget) {
-      return existingTarget;
+      return existingTarget.file;
     }
 
     const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true);
@@ -506,7 +498,7 @@ export default class PageModePlugin extends Plugin {
     try {
       file = await this.createRootMarkdownFile();
       await leaf.openFile(file, { active: true });
-      return { file, displayName: file.basename };
+      return file;
     } catch (error) {
       if (file) {
         try {
@@ -527,10 +519,9 @@ export default class PageModePlugin extends Plugin {
     return this.app.vault.create(path, "");
   }
 
-  private async moveWholeFileToRightDocument(sourceFile: TFile, targetFile: TFile): Promise<void> {
+  private async moveWholeFileToRightDocument(sourceFile: TFile, sourceContent: string, targetFile: TFile): Promise<void> {
     try {
-      const content = await this.app.vault.read(sourceFile);
-      await this.appendTextToFile(targetFile, this.getWholeFileExtractedText(sourceFile, content));
+      await this.appendTextToFile(targetFile, this.getWholeFileExtractedText(sourceFile, sourceContent));
       await this.app.fileManager.trashFile(sourceFile);
       new Notice(`Moved ${sourceFile.basename} to ${targetFile.basename}.`);
     } catch (error) {
@@ -724,7 +715,9 @@ export default class PageModePlugin extends Plugin {
 
     const view = this.getMarkdownViewForWheelTarget(target);
     if (!view) {
-      await this.handleWheelWithoutActiveFile(event, target, direction);
+      if (this.settings.pageUnitScroll) {
+        await this.handleWheelWithoutActiveFile(event, target, direction);
+      }
       return;
     }
 
@@ -766,6 +759,10 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
+    if (!this.settings.pageUnitScroll) {
+      return;
+    }
+
     const { scrollEl, contentEl } = scrollContext;
     const currentTop = scrollEl.scrollTop;
     const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
@@ -774,12 +771,6 @@ export default class PageModePlugin extends Plugin {
     const lastContentLineFullyVisible = mode === "preview" && this.isLastContentLineFullyVisible(scrollEl, contentEl);
     const shouldOpenNextFile = direction > 0 && (atBottom || lastContentLineFullyVisible);
     const shouldOpenPreviousFile = direction < 0 && atTop;
-
-    if (!shouldOpenNextFile && !shouldOpenPreviousFile && !this.settings.pageUnitScroll) {
-      this.consumeWheelEvent(event);
-      this.scrollElementByWheelEvent(scrollEl, event);
-      return;
-    }
 
     this.consumeWheelEvent(event);
 
@@ -815,26 +806,6 @@ export default class PageModePlugin extends Plugin {
   private consumeWheelEvent(event: WheelEvent): void {
     event.preventDefault();
     event.stopPropagation();
-  }
-
-  private getWheelDeltaPx(delta: number, deltaMode: number, pageSize: number): number {
-    if (deltaMode === WheelEvent.DOM_DELTA_LINE) {
-      return delta * 16;
-    }
-
-    if (deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-      return delta * pageSize;
-    }
-
-    return delta;
-  }
-
-  private scrollElementByWheelEvent(scrollEl: HTMLElement, event: WheelEvent): void {
-    scrollEl.scrollBy({
-      left: this.getWheelDeltaPx(event.deltaX, event.deltaMode, scrollEl.clientWidth),
-      top: this.getWheelDeltaPx(event.deltaY, event.deltaMode, scrollEl.clientHeight),
-      behavior: "auto",
-    });
   }
 
   private getMarkdownViewForWheelTarget(target: Node): MarkdownView | null {
@@ -1139,19 +1110,11 @@ export default class PageModePlugin extends Plugin {
     await this.openAdjacentMarkdownFile(-1, showNotice);
   }
 
-  private async openBoundaryMarkdownFile(direction: -1 | 1, showNotice: boolean): Promise<void> {
-    await this.openBoundaryMarkdownFileInLeaf(this.app.workspace.getLeaf(false), direction, showNotice);
-  }
-
   private async openBoundaryMarkdownFileInLeaf(
     leaf: WorkspaceLeaf,
     direction: -1 | 1,
     showNotice: boolean,
   ): Promise<void> {
-    if (this.openingFile) {
-      return;
-    }
-
     const files = this.getMarkdownFilesInNavigationOrder();
     const file = direction > 0 ? files[0] : files[files.length - 1];
     if (!file) {
@@ -1161,15 +1124,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    this.openingFile = true;
-    try {
-      await leaf.openFile(file, { active: true });
-    } catch (error) {
-      console.error("Failed to open Markdown file", error);
-      new Notice("Failed to open Markdown file.");
-    } finally {
-      this.openingFile = false;
-    }
+    await this.openMarkdownFileInLeaf(leaf, file, "Failed to open Markdown file");
   }
 
   private async openAdjacentMarkdownFile(offset: -1 | 1, showNotice: boolean): Promise<void> {
@@ -1195,10 +1150,6 @@ export default class PageModePlugin extends Plugin {
     offset: -1 | 1,
     showNotice: boolean,
   ): Promise<void> {
-    if (this.openingFile) {
-      return;
-    }
-
     if (!currentFile) {
       if (showNotice) {
         new Notice("No active file.");
@@ -1214,11 +1165,19 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
+    await this.openMarkdownFileInLeaf(leaf, adjacentFile, "Failed to open adjacent Markdown file");
+  }
+
+  private async openMarkdownFileInLeaf(leaf: WorkspaceLeaf, file: TFile, consoleMessage: string): Promise<void> {
+    if (this.openingFile) {
+      return;
+    }
+
     this.openingFile = true;
     try {
-      await leaf.openFile(adjacentFile, { active: true });
+      await leaf.openFile(file, { active: true });
     } catch (error) {
-      console.error("Failed to open adjacent Markdown file", error);
+      console.error(consoleMessage, error);
       new Notice("Failed to open Markdown file.");
     } finally {
       this.openingFile = false;
@@ -1362,7 +1321,7 @@ class PageModeSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Page-unit scrolling")
-      .setDesc("Use one wheel or trackpad gesture to jump by a page in main document tabs.")
+      .setDesc("Use wheel and trackpad gestures for page-sized content scrolling and edge-to-edge file movement.")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.pageUnitScroll).onChange(async (value) => {
           this.plugin.settings.pageUnitScroll = value;
