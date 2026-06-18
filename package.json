@@ -1,7 +1,7 @@
 {
   "name": "pagemode",
   "version": "0.1.15",
-  "description": "Page-style reading and navigation",
+  "description": "Page-style reading, wheel navigation, and note filing",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
