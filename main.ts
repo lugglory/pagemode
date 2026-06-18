@@ -391,7 +391,6 @@ export default class PageModePlugin extends Plugin {
       }
 
       this.deleteEditorRanges(draggedSelection.editor, draggedSelection.ranges);
-      event.preventDefault();
     }, 0);
   }
 

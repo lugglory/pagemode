@@ -1,6 +1,6 @@
 {
   "name": "pagemode",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Page-style reading and navigation",
   "main": "main.js",
   "scripts": {
