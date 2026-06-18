@@ -34,7 +34,7 @@ type LoadedPageModeSettings = {
 };
 
 const DEFAULT_SETTINGS: PageModeSettings = {
-  pageUnitScroll: true,
+  pageUnitScroll: false,
   hiddenPaths: [],
 };
 
