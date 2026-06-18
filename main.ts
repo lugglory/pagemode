@@ -719,6 +719,10 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
+    if (this.openingFile) {
+      return;
+    }
+
     const direction = Math.sign(event.deltaY);
     if (direction === 0) {
       return;
@@ -749,8 +753,7 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (this.isAdjacentFileNavigationTarget(target, view)) {
-      if (!this.shouldHandleWheelEvent(event, direction)) {
-        this.consumeWheelEvent(event);
+      if (!this.shouldRunWheelAction(event, direction)) {
         return;
       }
 
@@ -769,8 +772,7 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (this.isInlineTitleArea(event, view, scrollContext)) {
-      if (!this.shouldHandleWheelEvent(event, direction)) {
-        this.consumeWheelEvent(event);
+      if (!this.shouldRunWheelAction(event, direction)) {
         return;
       }
 
@@ -792,8 +794,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    if (!this.shouldHandleWheelEvent(event, direction)) {
-      this.consumeWheelEvent(event);
+    if (!this.shouldRunWheelAction(event, direction)) {
       return;
     }
 
@@ -947,8 +948,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    if (!this.shouldHandleWheelEvent(event, direction)) {
-      this.consumeWheelEvent(event);
+    if (!this.shouldRunWheelAction(event, direction)) {
       return;
     }
 
@@ -958,6 +958,18 @@ export default class PageModePlugin extends Plugin {
 
   private isMainWorkspaceTarget(target: HTMLElement): boolean {
     return target.closest(".workspace-split.mod-root") !== null && target.closest(".workspace-sidedock") === null;
+  }
+
+  private shouldRunWheelAction(event: WheelEvent, direction: number): boolean {
+    if (this.shouldHandleWheelEvent(event, direction)) {
+      return true;
+    }
+
+    if (!this.trackpadGestureLocked) {
+      this.consumeWheelEvent(event);
+    }
+
+    return false;
   }
 
   private shouldHandleWheelEvent(event: WheelEvent, direction: number): boolean {
