@@ -58,6 +58,11 @@ type PageScrollContext = {
   contentEl: HTMLElement;
 };
 
+type FileNavigationPosition = {
+  index: number;
+  total: number;
+};
+
 type SelectedEditorRange = {
   from: EditorPosition;
   to: EditorPosition;
@@ -423,13 +428,15 @@ export default class PageModePlugin extends Plugin {
   }
 
   private addMarkdownViewActions(): void {
+    const navigationFiles = this.getMarkdownFilesInNavigationOrder();
+
     this.app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) {
         return;
       }
 
-      this.addFilePositionBarToMarkdownView(view);
+      this.addFilePositionBarToMarkdownView(view, navigationFiles);
 
       if (!this.markdownActionViews.has(view)) {
         view.addAction("panel-left-open", "Send selection or file to right document", () => {
@@ -444,7 +451,7 @@ export default class PageModePlugin extends Plugin {
     return file.path.replace(/\.md$/i, "").split("/").join(" / ");
   }
 
-  private addFilePositionBarToMarkdownView(view: MarkdownView): void {
+  private addFilePositionBarToMarkdownView(view: MarkdownView, navigationFiles: TFile[]): void {
     this.ensureFilePositionStyles();
 
     let barEl = this.filePositionBarEls.get(view);
@@ -458,7 +465,7 @@ export default class PageModePlugin extends Plugin {
       thumbEl.addClass(FILE_POSITION_THUMB_CLASS);
       barEl.appendChild(thumbEl);
       barEl.addEventListener("mouseenter", () => {
-        this.updateFilePositionBar(view);
+        this.updateFilePositionBar(view, this.getMarkdownFilesInNavigationOrder());
       });
 
       view.contentEl.appendChild(barEl);
@@ -466,10 +473,10 @@ export default class PageModePlugin extends Plugin {
     }
 
     view.contentEl.addClass(FILE_POSITION_CONTAINER_CLASS);
-    this.updateFilePositionBar(view);
+    this.updateFilePositionBar(view, navigationFiles);
   }
 
-  private updateFilePositionBar(view: MarkdownView): void {
+  private updateFilePositionBar(view: MarkdownView, navigationFiles: TFile[]): void {
     const barEl = this.filePositionBarEls.get(view);
     const thumbEl = barEl?.querySelector<HTMLElement>(`.${FILE_POSITION_THUMB_CLASS}`) ?? null;
     const scrollContext = this.getPageScrollContext(view);
@@ -478,7 +485,7 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
-    const position = view.file ? this.getMarkdownFileNavigationPosition(view.file) : null;
+    const position = view.file ? this.getMarkdownFileNavigationPosition(view.file, navigationFiles) : null;
     barEl.toggleClass("is-hidden", position === null);
     if (!position) {
       return;
@@ -526,7 +533,7 @@ export default class PageModePlugin extends Plugin {
 
   private getFilePositionThumbTopPx(
     barEl: HTMLElement,
-    position: { index: number; total: number },
+    position: FileNavigationPosition,
     thumbHeight: number,
   ): number {
     const height = barEl.clientHeight;
@@ -548,10 +555,9 @@ export default class PageModePlugin extends Plugin {
     return Math.max(min, Math.min(max, value));
   }
 
-  private getMarkdownFileNavigationPosition(file: TFile): { index: number; total: number } | null {
-    const files = this.getMarkdownFilesInNavigationOrder();
-    const index = files.findIndex((candidate) => candidate.path === file.path);
-    return index >= 0 ? { index, total: files.length } : null;
+  private getMarkdownFileNavigationPosition(file: TFile, navigationFiles: TFile[]): FileNavigationPosition | null {
+    const index = navigationFiles.findIndex((candidate) => candidate.path === file.path);
+    return index >= 0 ? { index, total: navigationFiles.length } : null;
   }
 
   private ensureFilePositionStyles(): void {
