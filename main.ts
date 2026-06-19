@@ -24,9 +24,25 @@ const FILE_POSITION_BAR_CLASS = "pagemode-file-position-bar";
 const FILE_POSITION_THUMB_CLASS = "pagemode-file-position-thumb";
 const FILE_POSITION_BAR_VERTICAL_PADDING_PX = 0;
 const FILE_POSITION_THUMB_MIN_HEIGHT_PX = 2;
-const FILE_POSITION_BAR_MIN_WIDTH_PX = 20;
-const FILE_POSITION_BAR_MAX_WIDTH_PX = 40;
+const FILE_POSITION_BAR_MIN_WIDTH_PX = 12;
+const FILE_POSITION_BAR_MAX_WIDTH_PX = 64;
 const FILE_POSITION_BAR_MARGIN_GAP_PX = 4;
+const FILE_POSITION_BAR_ACTIVE_CLASS = "is-active";
+const FILE_POSITION_THUMB_LEFT_PX = 1;
+const FILE_POSITION_THUMB_MAX_WIDTH_PX = 19;
+const DOCUMENT_CONTROL_SELECTOR = [
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "a",
+  "[role='button']",
+  ".clickable-icon",
+  ".collapse-indicator",
+  ".heading-collapse-indicator",
+  ".list-collapse-indicator",
+  ".cm-fold-indicator",
+].join(", ");
 
 interface PageModeSettings {
   pageUnitScroll: boolean;
@@ -90,6 +106,8 @@ export default class PageModePlugin extends Plugin {
   private hiddenFileExplorerStyleEl: HTMLStyleElement | null = null;
   private filePositionStyleEl: HTMLStyleElement | null = null;
   private filePositionBarEls = new WeakMap<MarkdownView, HTMLDivElement>();
+  private activeFilePositionBarEl: HTMLElement | null = null;
+  private filePositionUpdateFrame: number | null = null;
   private collator = new Intl.Collator(undefined, {
     numeric: true,
     sensitivity: "base",
@@ -143,6 +161,19 @@ export default class PageModePlugin extends Plugin {
 
     this.registerDomEvent(
       activeDocument,
+      "mousemove",
+      (event: MouseEvent) => {
+        this.handleMouseMove(event);
+      },
+      { capture: true },
+    );
+
+    this.registerDomEvent(activeWindow, "blur", () => {
+      this.setActiveFilePositionBar(null);
+    });
+
+    this.registerDomEvent(
+      activeDocument,
       "dragstart",
       (event: DragEvent) => {
         this.handleDragStart(event);
@@ -160,6 +191,10 @@ export default class PageModePlugin extends Plugin {
     );
 
     this.register(() => {
+      if (this.filePositionUpdateFrame !== null) {
+        activeWindow.cancelAnimationFrame(this.filePositionUpdateFrame);
+        this.filePositionUpdateFrame = null;
+      }
       this.hiddenFileExplorerStyleEl?.remove();
       this.hiddenFileExplorerStyleEl = null;
       this.filePositionStyleEl?.remove();
@@ -211,6 +246,12 @@ export default class PageModePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.addMarkdownViewActions();
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("resize", () => {
+        this.scheduleFilePositionBarUpdate();
       }),
     );
 
@@ -447,6 +488,28 @@ export default class PageModePlugin extends Plugin {
     });
   }
 
+  private scheduleFilePositionBarUpdate(): void {
+    if (this.filePositionUpdateFrame !== null) {
+      return;
+    }
+
+    this.filePositionUpdateFrame = activeWindow.requestAnimationFrame(() => {
+      this.filePositionUpdateFrame = null;
+      this.updateFilePositionBars();
+    });
+  }
+
+  private updateFilePositionBars(): void {
+    const navigationFiles = this.getMarkdownFilesInNavigationOrder();
+
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (view instanceof MarkdownView) {
+        this.updateFilePositionBar(view, navigationFiles);
+      }
+    });
+  }
+
   private getNavigationPathText(file: TFile): string {
     return file.path.replace(/\.md$/i, "").split("/").join(" / ");
   }
@@ -464,9 +527,6 @@ export default class PageModePlugin extends Plugin {
       thumbEl = activeDocument.createElement("div");
       thumbEl.addClass(FILE_POSITION_THUMB_CLASS);
       barEl.appendChild(thumbEl);
-      barEl.addEventListener("mouseenter", () => {
-        this.updateFilePositionBar(view, this.getMarkdownFilesInNavigationOrder());
-      });
 
       view.contentEl.appendChild(barEl);
       this.filePositionBarEls.set(view, barEl);
@@ -506,9 +566,10 @@ export default class PageModePlugin extends Plugin {
   ): void {
     const contentRect = view.contentEl.getBoundingClientRect();
     const scrollRect = scrollContext.scrollEl.getBoundingClientRect();
+    const barWidth = this.getFilePositionBarWidthPx(scrollContext);
     barEl.style.top = `${Math.max(0, Math.round(scrollRect.top - contentRect.top))}px`;
     barEl.style.height = `${Math.max(0, Math.round(scrollRect.height))}px`;
-    barEl.style.width = `${this.getFilePositionBarWidthPx(scrollContext)}px`;
+    barEl.style.width = `${barWidth}px`;
   }
 
   private getFilePositionBarWidthPx(scrollContext: PageScrollContext): number {
@@ -520,6 +581,66 @@ export default class PageModePlugin extends Plugin {
       FILE_POSITION_BAR_MIN_WIDTH_PX,
       FILE_POSITION_BAR_MAX_WIDTH_PX,
     );
+  }
+
+  private handleMouseMove(event: MouseEvent): void {
+    const target = activeDocument.elementFromPoint(event.clientX, event.clientY);
+    if (!target) {
+      this.setActiveFilePositionBar(null);
+      return;
+    }
+
+    const view = this.getMarkdownViewForWheelTarget(target);
+    if (
+      !view ||
+      !this.isMainWorkspaceView(view) ||
+      !this.isTargetInWorkspaceTab(target, view) ||
+      !this.isFilePositionBarPoint(event, view) ||
+      this.isDocumentControlTarget(target, view)
+    ) {
+      this.setActiveFilePositionBar(null);
+      return;
+    }
+
+    this.setActiveFilePositionBar(this.filePositionBarEls.get(view) ?? null);
+  }
+
+  private setActiveFilePositionBar(barEl: HTMLElement | null): void {
+    if (this.activeFilePositionBarEl === barEl) {
+      return;
+    }
+
+    this.activeFilePositionBarEl?.removeClass(FILE_POSITION_BAR_ACTIVE_CLASS);
+    this.activeFilePositionBarEl = barEl;
+    this.activeFilePositionBarEl?.addClass(FILE_POSITION_BAR_ACTIVE_CLASS);
+  }
+
+  private isFilePositionBarArea(event: MouseEvent, target: Node, view: MarkdownView): boolean {
+    return this.isFilePositionBarPoint(event, view) && !this.isDocumentControlTarget(target, view);
+  }
+
+  private isFilePositionBarPoint(event: MouseEvent, view: MarkdownView): boolean {
+    const barEl = this.filePositionBarEls.get(view);
+    if (!barEl || barEl.hasClass("is-hidden")) {
+      return false;
+    }
+
+    const rect = barEl.getBoundingClientRect();
+    return (
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    );
+  }
+
+  private isDocumentControlTarget(target: Node, view: MarkdownView): boolean {
+    if (!target.instanceOf(Element)) {
+      return false;
+    }
+
+    const controlEl = target.closest(DOCUMENT_CONTROL_SELECTOR);
+    return controlEl !== null && view.containerEl.contains(controlEl);
   }
 
   private getFilePositionThumbHeightPx(barEl: HTMLElement, total: number): number {
@@ -577,6 +698,7 @@ export default class PageModePlugin extends Plugin {
   box-sizing: border-box;
   cursor: default;
   left: 0;
+  pointer-events: none;
   position: absolute;
   top: 0;
   width: ${FILE_POSITION_BAR_MAX_WIDTH_PX}px;
@@ -590,12 +712,12 @@ export default class PageModePlugin extends Plugin {
 .${FILE_POSITION_THUMB_CLASS} {
   background: var(--interactive-accent);
   height: ${FILE_POSITION_THUMB_MIN_HEIGHT_PX}px;
-  left: 1px;
+  left: ${FILE_POSITION_THUMB_LEFT_PX}px;
   position: absolute;
-  width: 19px;
+  width: min(${FILE_POSITION_THUMB_MAX_WIDTH_PX}px, calc(100% - ${FILE_POSITION_THUMB_LEFT_PX}px));
 }
 
-.${FILE_POSITION_BAR_CLASS}:not(:hover) .${FILE_POSITION_THUMB_CLASS} {
+.${FILE_POSITION_BAR_CLASS}:not(.${FILE_POSITION_BAR_ACTIVE_CLASS}) .${FILE_POSITION_THUMB_CLASS} {
   opacity: 0;
 }
 
@@ -914,6 +1036,14 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (!this.isTargetInWorkspaceTab(target, view)) {
+      return;
+    }
+
+    if (this.isFilePositionBarArea(event, target, view)) {
+      this.consumeWheelEvent(event);
+      if (!this.openingFile) {
+        await this.openAdjacentMarkdownFileForView(view, direction > 0 ? 1 : -1, false);
+      }
       return;
     }
 
