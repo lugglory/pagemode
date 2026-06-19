@@ -15,7 +15,7 @@ import {
   type WorkspaceLeaf,
 } from "obsidian";
 
-const SCROLL_EDGE_TOLERANCE_PX = 24;
+const SCROLL_EDGE_TOLERANCE_PX = 8;
 const LINE_BOUNDARY_EPSILON_PX = 1;
 const MIN_PAGE_ADVANCE_PX = 4;
 const INLINE_TITLE_AREA_PADDING_PX = 8;
@@ -243,7 +243,7 @@ export default class PageModePlugin extends Plugin {
     }
 
     menu.addItem((item) => {
-      item.setTitle("Hide from PageMode").setIcon("eye-off").setSection("info");
+      item.setTitle("PageMode: Hide").setIcon("eye-off").setSection("info");
 
       if (this.isHiddenPath(file.path, this.getHiddenPathSet())) {
         item.setDisabled(true);
@@ -762,17 +762,12 @@ export default class PageModePlugin extends Plugin {
     }
 
     const { scrollEl, contentEl } = scrollContext;
-    const currentTop = scrollEl.scrollTop;
     const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
-    const atTop = currentTop <= SCROLL_EDGE_TOLERANCE_PX;
-    const atBottom = currentTop + SCROLL_EDGE_TOLERANCE_PX >= maxScrollTop;
-    const lastContentLineFullyVisible = mode === "preview" && this.isLastContentLineFullyVisible(scrollEl, contentEl);
-    const shouldOpenNextFile = direction > 0 && (atBottom || lastContentLineFullyVisible);
-    const shouldOpenPreviousFile = direction < 0 && atTop;
-
-    this.consumeWheelEvent(event);
+    const shouldOpenNextFile = direction > 0 && this.isNearScrollBottom(scrollEl);
+    const shouldOpenPreviousFile = direction < 0 && this.isNearScrollTop(scrollEl);
 
     if (shouldOpenNextFile) {
+      this.consumeWheelEvent(event);
       if (!this.openingFile) {
         await this.openAdjacentMarkdownFileForView(view, 1, false);
       }
@@ -780,11 +775,14 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (shouldOpenPreviousFile) {
+      this.consumeWheelEvent(event);
       if (!this.openingFile) {
         await this.openAdjacentMarkdownFileForView(view, -1, false);
       }
       return;
     }
+
+    this.consumeWheelEvent(event);
 
     const nextTop = this.getNextPageTop(scrollEl, contentEl, direction, maxScrollTop);
     scrollEl.scrollTo({
@@ -914,6 +912,15 @@ export default class PageModePlugin extends Plugin {
     return target.instanceOf(Element) && target.closest(".inline-title") !== null;
   }
 
+  private isNearScrollTop(scrollEl: HTMLElement): boolean {
+    return scrollEl.scrollTop <= SCROLL_EDGE_TOLERANCE_PX;
+  }
+
+  private isNearScrollBottom(scrollEl: HTMLElement): boolean {
+    const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    return scrollEl.scrollTop + SCROLL_EDGE_TOLERANCE_PX >= maxScrollTop;
+  }
+
   private async handleWheelWithoutActiveFile(event: WheelEvent, target: Node, direction: number): Promise<void> {
     if (!this.isHTMLElement(target) || !this.isMainWorkspaceTarget(target)) {
       return;
@@ -985,17 +992,6 @@ export default class PageModePlugin extends Plugin {
     }
 
     return nextTop;
-  }
-
-  private isLastContentLineFullyVisible(scrollEl: HTMLElement, contentEl: HTMLElement): boolean {
-    const viewportBottom = scrollEl.scrollTop + scrollEl.clientHeight;
-    const lineRects = this.getContentLineRects(scrollEl, contentEl, {
-      top: scrollEl.scrollTop,
-      bottom: scrollEl.scrollHeight,
-    });
-    const lastLine = lineRects[lineRects.length - 1];
-
-    return lastLine !== undefined && lastLine.bottom <= viewportBottom + LINE_BOUNDARY_EPSILON_PX;
   }
 
   private getContentLineRects(
