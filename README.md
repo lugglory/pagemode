@@ -33,7 +33,7 @@ If no suitable right-side Markdown document exists, PageMode creates one in the 
 
 PageMode adds two file explorer actions:
 
-- **Move current file here** moves the active file into the selected folder.
+- **Move active file here** moves the active file into the selected folder.
 - **Hide from PageMode** excludes a file or folder from PageMode navigation.
 
 Hidden paths can be restored from the PageMode settings tab.

@@ -1,6 +1,6 @@
 {
   "name": "pagemode",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Page-style reading, wheel navigation, and note filing",
   "main": "main.js",
   "scripts": {

@@ -154,7 +154,7 @@ export default class PageModePlugin extends Plugin {
         if (file instanceof TFolder) {
           menu.addItem((item) => {
             item
-              .setTitle("Move current file here")
+              .setTitle("Move active file here")
               .setIcon("folder-input")
               .setSection("open")
               .onClick(() => {
@@ -243,7 +243,7 @@ export default class PageModePlugin extends Plugin {
     }
 
     menu.addItem((item) => {
-      item.setTitle("Hide from PageMode").setIcon("eye-off").setSection("open");
+      item.setTitle("Hide from PageMode").setIcon("eye-off").setSection("info");
 
       if (this.isHiddenPath(file.path, this.getHiddenPathSet())) {
         item.setDisabled(true);
@@ -715,9 +715,7 @@ export default class PageModePlugin extends Plugin {
 
     const view = this.getMarkdownViewForWheelTarget(target);
     if (!view) {
-      if (this.settings.pageUnitScroll) {
-        await this.handleWheelWithoutActiveFile(event, target, direction);
-      }
+      await this.handleWheelWithoutActiveFile(event, target, direction);
       return;
     }
 
