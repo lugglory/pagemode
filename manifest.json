@@ -1,7 +1,7 @@
 {
   "id": "pagemode",
   "name": "PageMode",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "minAppVersion": "1.6.6",
   "description": "Page-style reading, wheel navigation, and note filing.",
   "author": "Hyunyoung Park",
