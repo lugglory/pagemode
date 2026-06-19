@@ -24,8 +24,8 @@ const FILE_POSITION_BAR_CLASS = "pagemode-file-position-bar";
 const FILE_POSITION_THUMB_CLASS = "pagemode-file-position-thumb";
 const FILE_POSITION_BAR_VERTICAL_PADDING_PX = 0;
 const FILE_POSITION_THUMB_MIN_HEIGHT_PX = 2;
-const FILE_POSITION_BAR_MIN_WIDTH_PX = 24;
-const FILE_POSITION_BAR_MAX_WIDTH_PX = 48;
+const FILE_POSITION_BAR_MIN_WIDTH_PX = 20;
+const FILE_POSITION_BAR_MAX_WIDTH_PX = 40;
 const FILE_POSITION_BAR_MARGIN_GAP_PX = 4;
 
 interface PageModeSettings {
@@ -592,7 +592,7 @@ export default class PageModePlugin extends Plugin {
   height: ${FILE_POSITION_THUMB_MIN_HEIGHT_PX}px;
   left: 1px;
   position: absolute;
-  width: 16px;
+  width: 19px;
 }
 
 .${FILE_POSITION_BAR_CLASS}:not(:hover) .${FILE_POSITION_THUMB_CLASS} {
