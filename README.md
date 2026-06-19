@@ -1,47 +1,82 @@
 # PageMode
 
-PageMode is an Obsidian plugin for reading and organizing Markdown notes as a continuous sequence. It adds optional page-style wheel navigation, next/previous file movement, and small filing tools for reshaping notes without leaving the editor.
+PageMode is an Obsidian plugin for moving through Markdown notes as an ordered sequence and reshaping notes without leaving the editor. It adds wheel-based file navigation, optional page-style scrolling, a left-side file position bar, and small filing tools for moving content between notes.
 
 ## Features
 
-- Scroll by page-sized steps in Markdown reading and editing views.
-- With page-unit scrolling enabled, continue scrolling past the bottom or top of a note to open the next or previous Markdown file.
-- Use commands to open the next or previous Markdown file directly.
-- In editing view, send selected text to the nearest Markdown document on the right.
-- In editing view, send a whole file to the right document when no text is selected.
+- Open the next or previous Markdown file with commands or wheel gestures.
+- Use optional page-unit scrolling in Markdown reading and editing views.
+- Use the left file position bar to see where the current note sits in PageMode navigation and wheel to adjacent notes.
+- Send selected text, or a whole file, to the nearest Markdown document on the right.
 - Drag selected text between Markdown editors to move it, or hold `Ctrl`/`Cmd` to copy it.
-- Move the current file into a folder from the file explorer.
-- Hide files and folders from PageMode navigation.
+- Move the active file into a folder from the file explorer.
+- Hide files and folders from PageMode navigation and from the file explorer.
 
-## Navigation
+## Navigation Order
 
-PageMode follows the vault's folder order when moving between Markdown files. Files and folders hidden from PageMode are skipped.
+PageMode builds its navigation list from the vault tree. It walks folders recursively, places folders before files, sorts names naturally, and includes Markdown files only. Hidden files and folders are skipped.
 
-With page-unit scrolling enabled, wheel and trackpad gestures jump by one readable page instead of scrolling continuously. When you reach the end of a note, another scroll opens the next Markdown file. Scrolling upward from the top opens the previous Markdown file.
+## Wheel Navigation
 
-With page-unit scrolling disabled, normal Obsidian content scrolling is preserved. Wheel and trackpad gestures in title, tab, and header areas still move between files.
+Wheel direction maps to file direction:
 
-## Moving Text And Files
+- Scroll down to open the next Markdown file.
+- Scroll up to open the previous Markdown file.
 
-In editing view, use **Send selection or file to nearest right document** from the command palette, editor menu, or document action button.
+These wheel areas work even when page-unit scrolling is disabled:
 
-When text is selected, PageMode appends it to the nearest Markdown document on the right and removes it from the source editor. When nothing is selected, PageMode appends the current file under a heading and then moves the source file to trash using Obsidian's file manager.
+- The active tab, tab header area, and view header.
+- The inline title and the small area around the top of the note.
+- The left file position bar area.
+- An empty main workspace pane, which opens the first or last Markdown file.
 
-If no suitable right-side Markdown document exists, PageMode creates one in the right sidebar.
+When page-unit scrolling is disabled, normal Obsidian document scrolling is preserved in the note body.
+
+When page-unit scrolling is enabled, wheel and trackpad gestures in the note body move by page-sized steps. If the note is already at the bottom, another downward scroll opens the next Markdown file. If the note is already at the top, another upward scroll opens the previous Markdown file.
+
+## File Position Bar
+
+Markdown views get a narrow position bar in the left margin. Move the pointer over unused left margin space to show the indicator. The indicator marks the current file's position among the visible PageMode navigation files.
+
+Wheel over the bar area to move to the previous or next Markdown file. The bar does not handle clicks.
+
+PageMode leaves Obsidian controls alone. If the pointer is over a button, link, fold control, or similar document control, that control keeps priority and the PageMode bar stays inactive.
+
+## Moving Text And Files Right
+
+In editing view, run **Send selection or file to nearest right document** from the command palette, editor menu, or document action button.
+
+If text is selected, PageMode appends the selected text to the nearest Markdown document on the right and removes it from the source editor.
+
+If nothing is selected, PageMode appends the whole source file to the nearest Markdown document on the right under a heading named after the source file. The original source file is then moved to trash through Obsidian's file manager.
+
+If there is no suitable Markdown document on the right, PageMode creates an `Untitled.md` file in the vault root and opens it in the right sidebar.
+
+## Dragging Text Between Editors
+
+In editing view, drag selected text from one Markdown editor to another Markdown editor to move it. Hold `Ctrl` on Windows/Linux or `Cmd` on macOS to copy instead.
+
+PageMode only removes the original selection after the drop changes the target editor and the source selection is still unchanged.
 
 ## File Explorer Actions
 
 PageMode adds two file explorer actions:
 
-- **Move active file here** moves the active file into the selected folder.
-- **PageMode: Hide** excludes a file or folder from PageMode navigation.
+- **Move active file here** appears on folders and moves the active file into that folder.
+- **PageMode: Hide** appears on files and folders and excludes that path from PageMode navigation.
 
-Hidden paths can be restored from the PageMode settings tab.
+Hidden folders also hide their child files and folders. Hidden paths can be restored from the PageMode settings tab.
 
 ## Settings
 
-- **Page-unit scrolling**: Toggle page-sized content scrolling and edge-to-edge wheel navigation.
-- **Hidden files and folders**: Review and restore hidden paths.
+- **Page-unit scrolling**: Toggle page-sized content scrolling and scroll-edge file movement.
+- **Hidden files and folders**: Review and restore paths hidden from PageMode.
+
+## Commands
+
+- **Open next Markdown file**
+- **Open previous Markdown file**
+- **Send selection or file to nearest right document**
 
 ## Manual Install
 
