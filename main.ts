@@ -79,6 +79,23 @@ type FileNavigationPosition = {
   total: number;
 };
 
+type FileExplorerPluginInstance = {
+  revealInFolder?: (file: TAbstractFile) => unknown;
+};
+
+type InternalPluginEntry = {
+  instance?: FileExplorerPluginInstance;
+};
+
+type InternalPlugins = {
+  plugins?: Record<string, InternalPluginEntry>;
+  getPluginById?: (id: string) => InternalPluginEntry | null;
+};
+
+type AppWithInternalPlugins = App & {
+  internalPlugins?: InternalPlugins;
+};
+
 type SelectedEditorRange = {
   from: EditorPosition;
   to: EditorPosition;
@@ -1493,6 +1510,7 @@ export default class PageModePlugin extends Plugin {
     this.openingFile = true;
     try {
       await leaf.openFile(file, { active: true });
+      this.revealFileInFileExplorer(file);
     } catch (error) {
       console.error(consoleMessage, error);
       new Notice("Failed to open Markdown file.");
@@ -1511,6 +1529,81 @@ export default class PageModePlugin extends Plugin {
     }
 
     return files[adjacentIndex];
+  }
+
+  private revealFileInFileExplorer(file: TFile): void {
+    if (this.syncFileExplorerSelection(file)) {
+      return;
+    }
+
+    try {
+      const result = this.getFileExplorerPluginInstance()?.revealInFolder?.(file);
+      if (this.isPromiseLike(result)) {
+        void Promise.resolve(result).finally(() => {
+          this.scheduleFileExplorerSelectionSync(file);
+        });
+      }
+    } catch (error) {
+      console.debug("Failed to reveal file in file explorer", error);
+    }
+
+    this.scheduleFileExplorerSelectionSync(file);
+  }
+
+  private isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+    return this.isRecord(value) && typeof value.then === "function";
+  }
+
+  private getFileExplorerPluginInstance(): FileExplorerPluginInstance | null {
+    const internalPlugins = (this.app as AppWithInternalPlugins).internalPlugins;
+    const entry =
+      internalPlugins?.getPluginById?.("file-explorer") ?? internalPlugins?.plugins?.["file-explorer"] ?? null;
+
+    return entry?.instance ?? null;
+  }
+
+  private scheduleFileExplorerSelectionSync(file: TFile): void {
+    const path = file.path;
+    const syncIfStillActive = () => {
+      if (this.app.workspace.getActiveFile()?.path === path) {
+        this.syncFileExplorerSelection(file);
+      }
+    };
+
+    activeWindow.setTimeout(syncIfStillActive, 0);
+    activeWindow.requestAnimationFrame(syncIfStillActive);
+  }
+
+  private syncFileExplorerSelection(file: TFile): boolean {
+    const explorerEls = Array.from(
+      activeDocument.querySelectorAll<HTMLElement>(
+        `.workspace-leaf-content[data-type="file-explorer"]`,
+      ),
+    );
+    const targetSelector = `.nav-file-title[data-path=${this.getCssString(file.path)}]`;
+    let targetTitleEl: HTMLElement | null = null;
+
+    for (const explorerEl of explorerEls) {
+      explorerEl.querySelectorAll<HTMLElement>(".nav-file.is-active, .nav-file-title.is-active").forEach((el) => {
+        el.removeClass("is-active");
+      });
+
+      const titleEl = explorerEl.querySelector<HTMLElement>(targetSelector);
+      if (!titleEl) {
+        continue;
+      }
+
+      titleEl.addClass("is-active");
+      titleEl.closest<HTMLElement>(".nav-file")?.addClass("is-active");
+      targetTitleEl = targetTitleEl ?? titleEl;
+    }
+
+    if (targetTitleEl) {
+      targetTitleEl.scrollIntoView({ block: "nearest" });
+      return true;
+    }
+
+    return false;
   }
 
   private getMarkdownFilesInNavigationOrder(): TFile[] {
