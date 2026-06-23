@@ -118,8 +118,10 @@ export default class PageModePlugin extends Plugin {
   settings: PageModeSettings = { ...DEFAULT_SETTINGS };
 
   private openingFile = false;
+  private unloaded = false;
   private draggedEditorSelection: DraggedEditorSelection | null = null;
   private markdownActionViews = new WeakSet<MarkdownView>();
+  private markdownActionEls = new Set<HTMLElement>();
   private hiddenFileExplorerStyleEl: HTMLStyleElement | null = null;
   private filePositionStyleEl: HTMLStyleElement | null = null;
   private filePositionBarEls = new WeakMap<MarkdownView, HTMLDivElement>();
@@ -131,6 +133,7 @@ export default class PageModePlugin extends Plugin {
   });
 
   async onload(): Promise<void> {
+    this.unloaded = false;
     await this.loadSettings();
     this.addSettingTab(new PageModeSettingTab(this.app, this));
     this.updateHiddenFileExplorerStyles();
@@ -208,10 +211,13 @@ export default class PageModePlugin extends Plugin {
     );
 
     this.register(() => {
+      this.unloaded = true;
       if (this.filePositionUpdateFrame !== null) {
         activeWindow.cancelAnimationFrame(this.filePositionUpdateFrame);
         this.filePositionUpdateFrame = null;
       }
+      this.markdownActionEls.forEach((element) => element.remove());
+      this.markdownActionEls.clear();
       this.hiddenFileExplorerStyleEl?.remove();
       this.hiddenFileExplorerStyleEl = null;
       this.filePositionStyleEl?.remove();
@@ -257,6 +263,10 @@ export default class PageModePlugin extends Plugin {
     );
 
     this.app.workspace.onLayoutReady(() => {
+      if (this.unloaded) {
+        return;
+      }
+
       this.addMarkdownViewActions();
     });
 
@@ -486,6 +496,10 @@ export default class PageModePlugin extends Plugin {
   }
 
   private addMarkdownViewActions(): void {
+    if (this.unloaded) {
+      return;
+    }
+
     const navigationFiles = this.getMarkdownFilesInNavigationOrder();
 
     this.app.workspace.iterateAllLeaves((leaf) => {
@@ -497,9 +511,11 @@ export default class PageModePlugin extends Plugin {
       this.addFilePositionBarToMarkdownView(view, navigationFiles);
 
       if (!this.markdownActionViews.has(view)) {
-        view.addAction("panel-left-open", "Send selection or file to right document", () => {
+        const actionEl = view.addAction("panel-left-open", "Send selection or file to right document", () => {
           void this.extractSelectionToRightDocumentFromView(view);
         });
+        actionEl.setAttr("data-pagemode-markdown-action", "");
+        this.markdownActionEls.add(actionEl);
         this.markdownActionViews.add(view);
       }
     });
@@ -846,12 +862,21 @@ export default class PageModePlugin extends Plugin {
   private async moveWholeFileToRightDocument(sourceFile: TFile, sourceContent: string, targetFile: TFile): Promise<void> {
     try {
       await this.appendTextToFile(targetFile, this.getWholeFileExtractedText(sourceFile, sourceContent));
-      await this.app.fileManager.trashFile(sourceFile);
-      new Notice(`Moved ${sourceFile.basename} to ${targetFile.basename}.`);
     } catch (error) {
-      console.error("Failed to move whole file to right document", error);
-      new Notice("Failed to move file to right document.");
+      console.error("Failed to append whole file to right document", error);
+      new Notice("Failed to copy file content to right document.");
+      return;
     }
+
+    try {
+      await this.app.fileManager.trashFile(sourceFile);
+    } catch (error) {
+      console.error("Failed to trash source file after copying to right document", error);
+      new Notice("Copied to right document, but failed to delete the source file.");
+      return;
+    }
+
+    new Notice(`Moved ${sourceFile.basename} to ${targetFile.basename}.`);
   }
 
   private getWholeFileExtractedText(file: TFile, content: string): string {
