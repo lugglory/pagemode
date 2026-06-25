@@ -47,19 +47,19 @@ const DOCUMENT_CONTROL_SELECTOR = [
 interface PageModeSettings {
   pageUnitScroll: boolean;
   archiveFolder: string;
-  hiddenPaths: string[];
+  showArchiveFolder: boolean;
 }
 
 type LoadedPageModeSettings = {
   pageUnitScroll?: boolean;
   archiveFolder?: unknown;
-  hiddenPaths?: unknown;
+  showArchiveFolder?: boolean;
 };
 
 const DEFAULT_SETTINGS: PageModeSettings = {
   pageUnitScroll: false,
   archiveFolder: "archive",
-  hiddenPaths: [],
+  showArchiveFolder: false,
 };
 
 type ContentLineRect = {
@@ -133,7 +133,7 @@ export default class PageModePlugin extends Plugin {
   private draggedEditorSelection: DraggedEditorSelection | null = null;
   private markdownActionViews = new WeakSet<MarkdownView>();
   private markdownActionEls = new Set<HTMLElement>();
-  private hiddenFileExplorerStyleEl: HTMLStyleElement | null = null;
+  private archiveFolderStyleEl: HTMLStyleElement | null = null;
   private filePositionStyleEl: HTMLStyleElement | null = null;
   private filePositionBarEls = new WeakMap<MarkdownView, HTMLDivElement>();
   private activeFilePositionBarEl: HTMLElement | null = null;
@@ -147,7 +147,7 @@ export default class PageModePlugin extends Plugin {
     this.unloaded = false;
     await this.loadSettings();
     this.addSettingTab(new PageModeSettingTab(this.app, this));
-    this.updateHiddenFileExplorerStyles();
+    this.updateArchiveFolderStyles();
 
     this.addCommand({
       id: "open-next-file-in-folder",
@@ -186,12 +186,29 @@ export default class PageModePlugin extends Plugin {
       name: "Archive current file",
       checkCallback: (checking) => {
         const currentFile = this.app.workspace.getActiveFile();
-        if (!currentFile) {
+        if (!currentFile || this.isArchivePath(currentFile.path)) {
           return false;
         }
 
         if (!checking) {
-          void this.archiveFile(currentFile);
+          void this.archiveAbstractFile(currentFile);
+        }
+
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "unarchive-current-file",
+      name: "Unarchive current file",
+      checkCallback: (checking) => {
+        const currentFile = this.app.workspace.getActiveFile();
+        if (!currentFile || !this.isArchivePath(currentFile.path)) {
+          return false;
+        }
+
+        if (!checking) {
+          void this.unarchiveAbstractFile(currentFile);
         }
 
         return true;
@@ -246,8 +263,8 @@ export default class PageModePlugin extends Plugin {
       }
       this.markdownActionEls.forEach((element) => element.remove());
       this.markdownActionEls.clear();
-      this.hiddenFileExplorerStyleEl?.remove();
-      this.hiddenFileExplorerStyleEl = null;
+      this.archiveFolderStyleEl?.remove();
+      this.archiveFolderStyleEl = null;
       this.filePositionStyleEl?.remove();
       this.filePositionStyleEl = null;
       activeDocument.querySelectorAll(`[data-pagemode-file-position-bar]`).forEach((element) => element.remove());
@@ -271,7 +288,6 @@ export default class PageModePlugin extends Plugin {
         }
 
         this.addArchiveMenuItem(menu, file);
-        this.addHideFromPageModeMenuItem(menu, file);
       }),
     );
 
@@ -338,7 +354,8 @@ export default class PageModePlugin extends Plugin {
     return {
       pageUnitScroll: typeof value.pageUnitScroll === "boolean" ? value.pageUnitScroll : undefined,
       archiveFolder: value.archiveFolder,
-      hiddenPaths: value.hiddenPaths,
+      showArchiveFolder:
+        typeof value.showArchiveFolder === "boolean" ? value.showArchiveFolder : undefined,
     };
   }
 
@@ -348,95 +365,35 @@ export default class PageModePlugin extends Plugin {
       ...DEFAULT_SETTINGS,
       pageUnitScroll: loadedData.pageUnitScroll ?? DEFAULT_SETTINGS.pageUnitScroll,
       archiveFolder: this.normalizeArchiveFolder(loadedData.archiveFolder),
-      hiddenPaths: this.normalizeHiddenPaths(loadedData?.hiddenPaths),
+      showArchiveFolder: loadedData.showArchiveFolder ?? DEFAULT_SETTINGS.showArchiveFolder,
     };
   }
 
   async saveSettings(): Promise<void> {
+    this.settings.archiveFolder = this.normalizeArchiveFolder(this.settings.archiveFolder);
     await this.saveData(this.settings);
-    this.updateHiddenFileExplorerStyles();
+    this.updateArchiveFolderStyles();
   }
 
   private addArchiveMenuItem(menu: Menu, file: TAbstractFile): void {
-    if (!(file instanceof TFile)) {
+    if (!(file instanceof TFile || file instanceof TFolder) || file.path === "/") {
+      return;
+    }
+
+    const isArchived = this.isArchivePath(file.path);
+    if (file.path === this.getArchiveFolderPath()) {
       return;
     }
 
     menu.addItem((item) => {
       item
-        .setTitle("PageMode: Archive")
-        .setIcon("archive")
+        .setTitle(isArchived ? "PageMode: Unarchive" : "PageMode: Archive")
+        .setIcon(isArchived ? "archive-restore" : "archive")
         .setSection("open")
         .onClick(() => {
-          void this.archiveFile(file);
+          void (isArchived ? this.unarchiveAbstractFile(file) : this.archiveAbstractFile(file));
         });
     });
-  }
-
-  private addHideFromPageModeMenuItem(menu: Menu, file: TAbstractFile): void {
-    if (!(file instanceof TFile || file instanceof TFolder) || file.path === "/") {
-      return;
-    }
-
-    menu.addItem((item) => {
-      item.setTitle("PageMode: Hide").setIcon("eye-off").setSection("info");
-
-      if (this.isHiddenPath(file.path, this.getHiddenPathSet())) {
-        item.setDisabled(true);
-        return;
-      }
-
-      item.onClick(() => {
-        void this.hidePath(file.path);
-      });
-    });
-  }
-
-  async hidePath(path: string): Promise<void> {
-    const normalizedPath = normalizePath(path);
-    const hiddenPaths = this.getHiddenPathSet();
-
-    if (this.isHiddenPath(normalizedPath, hiddenPaths)) {
-      new Notice("Already hidden from PageMode.");
-      return;
-    }
-
-    const nextHiddenPaths = this.settings.hiddenPaths.filter(
-      (hiddenPath) => !hiddenPath.startsWith(`${normalizedPath}/`),
-    );
-    nextHiddenPaths.push(normalizedPath);
-    this.settings.hiddenPaths = this.normalizeHiddenPaths(nextHiddenPaths);
-    await this.saveSettings();
-    new Notice(`Hidden from PageMode: ${normalizedPath}`);
-  }
-
-  async unhidePath(path: string): Promise<void> {
-    const normalizedPath = normalizePath(path);
-    this.settings.hiddenPaths = this.normalizeHiddenPaths(
-      this.settings.hiddenPaths.filter((hiddenPath) => hiddenPath !== normalizedPath),
-    );
-    await this.saveSettings();
-  }
-
-  private normalizeHiddenPaths(paths: unknown): string[] {
-    if (!Array.isArray(paths)) {
-      return [];
-    }
-
-    const normalizedPaths = paths
-      .filter((path): path is string => typeof path === "string" && path.trim().length > 0)
-      .map((path) => normalizePath(path.trim()))
-      .filter((path) => path !== "/")
-      .sort((a, b) => this.collator.compare(a, b));
-
-    const result: string[] = [];
-    for (const path of normalizedPaths) {
-      if (!result.some((existingPath) => path === existingPath || path.startsWith(`${existingPath}/`))) {
-        result.push(path);
-      }
-    }
-
-    return result;
   }
 
   private normalizeArchiveFolder(value: unknown): string {
@@ -450,31 +407,28 @@ export default class PageModePlugin extends Plugin {
     return normalizedPath;
   }
 
-  private updateHiddenFileExplorerStyles(): void {
-    if (!this.hiddenFileExplorerStyleEl) {
-      this.hiddenFileExplorerStyleEl = activeDocument.createElement("style");
-      this.hiddenFileExplorerStyleEl.setAttr("data-pagemode-hidden-files", "");
-      activeDocument.head.appendChild(this.hiddenFileExplorerStyleEl);
+  private updateArchiveFolderStyles(): void {
+    if (!this.archiveFolderStyleEl) {
+      this.archiveFolderStyleEl = activeDocument.createElement("style");
+      this.archiveFolderStyleEl.setAttr("data-pagemode-archive-folder", "");
+      activeDocument.head.appendChild(this.archiveFolderStyleEl);
     }
 
-    const selectors = this.settings.hiddenPaths.flatMap((path) => {
-      const dataPath = this.getCssString(path);
-      return [
-        `.workspace-leaf-content[data-type="file-explorer"] .nav-file:has(> .nav-file-title[data-path=${dataPath}])`,
-        `.workspace-leaf-content[data-type="file-explorer"] .nav-folder:has(> .nav-folder-title[data-path=${dataPath}])`,
-      ];
-    });
+    if (this.settings.showArchiveFolder) {
+      this.archiveFolderStyleEl.textContent = "";
+      return;
+    }
 
-    this.hiddenFileExplorerStyleEl.textContent =
-      selectors.length > 0 ? `${selectors.join(",\n")} {\n  display: none !important;\n}\n` : "";
+    const archiveFolderPath = this.getArchiveFolderPath();
+    const dataPath = this.getCssString(archiveFolderPath);
+    this.archiveFolderStyleEl.textContent = `.workspace-leaf-content[data-type="file-explorer"] .nav-folder:has(> .nav-folder-title[data-path=${dataPath}]) {
+  display: none !important;
+}
+`;
   }
 
   private getCssString(value: string): string {
     return JSON.stringify(value);
-  }
-
-  private getHiddenPathSet(): Set<string> {
-    return new Set(this.settings.hiddenPaths);
   }
 
   private handleDragStart(event: DragEvent): void {
@@ -1731,21 +1685,21 @@ export default class PageModePlugin extends Plugin {
   }
 
   private getMarkdownFilesInNavigationOrder(): TFile[] {
-    return this.getFilesInVaultDfsOrder(this.getHiddenPathSet());
+    return this.getFilesInVaultDfsOrder();
   }
 
-  private getFilesInVaultDfsOrder(hiddenPaths = new Set<string>()): TFile[] {
+  private getFilesInVaultDfsOrder(): TFile[] {
     const files: TFile[] = [];
 
     const visitFolder = (folder: TFolder): void => {
-      if (this.isHiddenPath(folder.path, hiddenPaths)) {
+      if (this.isArchivePath(folder.path)) {
         return;
       }
 
       const children = [...folder.children].sort((a, b) => this.compareAbstractFiles(a, b));
 
       for (const child of children) {
-        if (this.isHiddenPath(child.path, hiddenPaths)) {
+        if (this.isArchivePath(child.path)) {
           continue;
         }
 
@@ -1759,16 +1713,6 @@ export default class PageModePlugin extends Plugin {
 
     visitFolder(this.app.vault.getRoot());
     return files;
-  }
-
-  private isHiddenPath(path: string, hiddenPaths: Set<string>): boolean {
-    for (const hiddenPath of hiddenPaths) {
-      if (path === hiddenPath || path.startsWith(`${hiddenPath}/`)) {
-        return true;
-      }
-    }
-
-    return false;
   }
 
   private compareAbstractFiles(a: TAbstractFile, b: TAbstractFile): number {
@@ -1787,38 +1731,99 @@ export default class PageModePlugin extends Plugin {
     return this.collator.compare(a.path, b.path);
   }
 
-  private async archiveFile(file: TFile): Promise<void> {
-    const archiveFolderPath = this.normalizeArchiveFolder(this.settings.archiveFolder);
-    const targetFolderPath = this.getArchiveTargetFolderPath(archiveFolderPath, file);
-
-    let targetFolder: TFolder;
-    try {
-      targetFolder = await this.getOrCreateFolder(targetFolderPath);
-    } catch (error) {
-      console.error("Failed to create archive folder", error);
-      new Notice("Failed to create archive folder.");
+  private async archiveAbstractFile(file: TAbstractFile): Promise<void> {
+    const archiveFolderPath = this.getArchiveFolderPath();
+    if (this.isArchivePath(file.path)) {
+      new Notice("The item is already archived.");
       return;
     }
 
-    const destinationPath = this.getAvailableFilePath(targetFolder, file.name);
-
-    if (destinationPath === file.path) {
-      new Notice("The file is already archived.");
+    const destinationPath = this.getAvailableAbstractFilePath(
+      normalizePath(`${archiveFolderPath}/${file.path}`),
+      file instanceof TFile,
+    );
+    if (file instanceof TFolder && this.isPathDescendantOf(destinationPath, file.path)) {
+      new Notice("Cannot archive a folder into itself.");
       return;
     }
+
+    await this.getOrCreateFolder(this.getParentPath(destinationPath));
 
     try {
       await this.app.fileManager.renameFile(file, destinationPath);
       new Notice(`Archived to ${destinationPath}.`);
     } catch (error) {
-      console.error("Failed to archive file", error);
-      new Notice("Failed to archive file.");
+      console.error("Failed to archive item", error);
+      new Notice("Failed to archive item.");
     }
   }
 
-  private getArchiveTargetFolderPath(archiveFolderPath: string, file: TFile): string {
-    const parentPath = file.parent?.path === "/" ? "" : file.parent?.path ?? "";
-    return parentPath ? normalizePath(`${archiveFolderPath}/${parentPath}`) : archiveFolderPath;
+  private async unarchiveAbstractFile(file: TAbstractFile): Promise<void> {
+    const unarchivedPath = this.getUnarchivedPath(file.path);
+    if (!unarchivedPath) {
+      new Notice("The item is not archived.");
+      return;
+    }
+
+    const destinationPath = this.getAvailableAbstractFilePath(unarchivedPath, file instanceof TFile);
+    await this.getOrCreateFolder(this.getParentPath(destinationPath));
+
+    try {
+      await this.app.fileManager.renameFile(file, destinationPath);
+      new Notice(`Unarchived to ${destinationPath}.`);
+    } catch (error) {
+      console.error("Failed to unarchive item", error);
+      new Notice("Failed to unarchive item.");
+    }
+  }
+
+  private getArchiveFolderPath(): string {
+    return this.normalizeArchiveFolder(this.settings.archiveFolder);
+  }
+
+  private isArchivePath(path: string): boolean {
+    const archiveFolderPath = this.getArchiveFolderPath();
+    return path === archiveFolderPath || path.startsWith(`${archiveFolderPath}/`);
+  }
+
+  private getUnarchivedPath(path: string): string | null {
+    const archiveFolderPath = this.getArchiveFolderPath();
+    if (path === archiveFolderPath) {
+      return null;
+    }
+
+    if (!path.startsWith(`${archiveFolderPath}/`)) {
+      return null;
+    }
+
+    return normalizePath(path.slice(archiveFolderPath.length + 1));
+  }
+
+  private getParentPath(path: string): string {
+    const normalizedPath = normalizePath(path);
+    const lastSlashIndex = normalizedPath.lastIndexOf("/");
+    return lastSlashIndex < 0 ? "" : normalizedPath.slice(0, lastSlashIndex);
+  }
+
+  private getAvailableAbstractFilePath(path: string, preserveExtension: boolean): string {
+    const normalizedPath = normalizePath(path);
+    const parentPath = this.getParentPath(normalizedPath);
+    const name = parentPath ? normalizedPath.slice(parentPath.length + 1) : normalizedPath;
+    const extensionMatch = preserveExtension ? name.match(/(\.[^.]*)$/) : null;
+    const extension = extensionMatch?.[1] ?? "";
+    const baseName = extension ? name.slice(0, -extension.length) : name;
+
+    let candidateName = name;
+    let candidatePath = this.joinVaultPath(parentPath, candidateName);
+    let index = 1;
+
+    while (this.app.vault.getAbstractFileByPath(candidatePath)) {
+      candidateName = `${baseName} ${index}${extension}`;
+      candidatePath = this.joinVaultPath(parentPath, candidateName);
+      index += 1;
+    }
+
+    return candidatePath;
   }
 
   private async getOrCreateFolder(path: string): Promise<TFolder> {
@@ -1851,6 +1856,10 @@ export default class PageModePlugin extends Plugin {
     }
 
     return folder;
+  }
+
+  private isPathDescendantOf(path: string, parentPath: string): boolean {
+    return path.startsWith(`${parentPath}/`);
   }
 
   private async moveCurrentFileToFolder(targetFolder: TFolder): Promise<void> {
@@ -1905,6 +1914,10 @@ export default class PageModePlugin extends Plugin {
 
     return normalizePath(`${folder.path}/${fileName}`);
   }
+
+  private joinVaultPath(parentPath: string, name: string): string {
+    return parentPath ? normalizePath(`${parentPath}/${name}`) : normalizePath(name);
+  }
 }
 
 class PageModeSettingTab extends PluginSettingTab {
@@ -1942,25 +1955,14 @@ class PageModeSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl).setName("Hidden files and folders").setDesc("Items hidden from File explorer and PageMode navigation.");
-
-    if (this.plugin.settings.hiddenPaths.length === 0) {
-      new Setting(containerEl).setName("No hidden items");
-      return;
-    }
-
-    for (const path of this.plugin.settings.hiddenPaths) {
-      new Setting(containerEl)
-        .setName(path)
-        .addExtraButton((button) => {
-          button
-            .setIcon("x")
-            .setTooltip("Remove from hidden items")
-            .onClick(async () => {
-              await this.plugin.unhidePath(path);
-              this.display();
-            });
+    new Setting(containerEl)
+      .setName("Show archive folder")
+      .setDesc("Show the archive folder in File explorer. Archived files are still excluded from PageMode navigation.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.showArchiveFolder).onChange(async (value) => {
+          this.plugin.settings.showArchiveFolder = value;
+          await this.plugin.saveSettings();
         });
-    }
+      });
   }
 }
