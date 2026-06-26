@@ -824,7 +824,7 @@ export default class PageModePlugin extends Plugin {
     }
 
     if (ranges.length === 0) {
-      await this.moveWholeFileToRightDocument(sourceFile, editor.getValue(), targetFile);
+      await this.moveWholeFileToRightDocument(sourceView.leaf, sourceFile, editor.getValue(), targetFile);
       return;
     }
 
@@ -840,18 +840,15 @@ export default class PageModePlugin extends Plugin {
       return existingTarget.file;
     }
 
-    const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true);
-    if (!leaf) {
-      new Notice("No right sidebar available.");
-      return null;
-    }
-
     let file: TFile | null = null;
+    let leaf: WorkspaceLeaf | null = null;
     try {
       file = await this.createRootMarkdownFile();
-      await leaf.openFile(file, { active: true });
+      leaf = this.app.workspace.createLeafBySplit(sourceView.leaf, "vertical", false);
+      await leaf.openFile(file, { active: false });
       return file;
     } catch (error) {
+      leaf?.detach();
       if (file) {
         try {
           await this.app.fileManager.trashFile(file);
@@ -871,7 +868,12 @@ export default class PageModePlugin extends Plugin {
     return this.app.vault.create(path, "");
   }
 
-  private async moveWholeFileToRightDocument(sourceFile: TFile, sourceContent: string, targetFile: TFile): Promise<void> {
+  private async moveWholeFileToRightDocument(
+    sourceLeaf: WorkspaceLeaf,
+    sourceFile: TFile,
+    sourceContent: string,
+    targetFile: TFile,
+  ): Promise<void> {
     try {
       await this.appendTextToFile(targetFile, this.getWholeFileExtractedText(sourceFile, sourceContent));
     } catch (error) {
@@ -880,15 +882,38 @@ export default class PageModePlugin extends Plugin {
       return;
     }
 
+    await this.clearAndFocusSourceLeaf(sourceLeaf);
+
     try {
       await this.app.fileManager.trashFile(sourceFile);
     } catch (error) {
       console.error("Failed to trash source file after copying to right document", error);
       new Notice("Copied to right document, but failed to delete the source file.");
+      this.focusWorkspaceLeaf(sourceLeaf);
       return;
     }
 
+    this.focusWorkspaceLeaf(sourceLeaf);
     new Notice(`Moved ${sourceFile.basename} to ${targetFile.basename}.`);
+  }
+
+  private async clearAndFocusSourceLeaf(sourceLeaf: WorkspaceLeaf): Promise<void> {
+    try {
+      await sourceLeaf.setViewState({ type: "empty", active: true });
+    } catch (error) {
+      console.error("Failed to clear source tab after moving file", error);
+    }
+
+    this.focusWorkspaceLeaf(sourceLeaf);
+  }
+
+  private focusWorkspaceLeaf(leaf: WorkspaceLeaf): void {
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    activeWindow.requestAnimationFrame(() => {
+      if (!this.unloaded) {
+        this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      }
+    });
   }
 
   private getWholeFileExtractedText(file: TFile, content: string): string {
