@@ -44,22 +44,32 @@ const DOCUMENT_CONTROL_SELECTOR = [
   ".cm-fold-indicator",
 ].join(", ");
 
+type RightDocumentLocation = "right-split" | "right-sidebar";
+
+const RIGHT_DOCUMENT_LOCATION_OPTIONS: Record<RightDocumentLocation, string> = {
+  "right-split": "Right split",
+  "right-sidebar": "Right sidebar",
+};
+
 interface PageModeSettings {
   pageUnitScroll: boolean;
   archiveFolder: string;
   showArchiveFolder: boolean;
+  rightDocumentLocation: RightDocumentLocation;
 }
 
 type LoadedPageModeSettings = {
   pageUnitScroll?: boolean;
   archiveFolder?: unknown;
   showArchiveFolder?: boolean;
+  rightDocumentLocation?: RightDocumentLocation;
 };
 
 const DEFAULT_SETTINGS: PageModeSettings = {
   pageUnitScroll: false,
   archiveFolder: "archive",
   showArchiveFolder: false,
+  rightDocumentLocation: "right-split",
 };
 
 type ContentLineRect = {
@@ -115,6 +125,11 @@ type MarkdownViewTarget = {
   file: TFile;
   displayName: string;
   distance: number;
+};
+
+type MarkdownLeafTarget = {
+  leaf: WorkspaceLeaf;
+  detachOnFailure: boolean;
 };
 
 type PendingWheelNavigation = {
@@ -346,6 +361,10 @@ export default class PageModePlugin extends Plugin {
     return typeof value === "object" && value !== null;
   }
 
+  private isRightDocumentLocation(value: unknown): value is RightDocumentLocation {
+    return value === "right-split" || value === "right-sidebar";
+  }
+
   private parseLoadedSettings(value: unknown): LoadedPageModeSettings {
     if (!this.isRecord(value)) {
       return {};
@@ -356,6 +375,9 @@ export default class PageModePlugin extends Plugin {
       archiveFolder: value.archiveFolder,
       showArchiveFolder:
         typeof value.showArchiveFolder === "boolean" ? value.showArchiveFolder : undefined,
+      rightDocumentLocation: this.isRightDocumentLocation(value.rightDocumentLocation)
+        ? value.rightDocumentLocation
+        : undefined,
     };
   }
 
@@ -366,11 +388,15 @@ export default class PageModePlugin extends Plugin {
       pageUnitScroll: loadedData.pageUnitScroll ?? DEFAULT_SETTINGS.pageUnitScroll,
       archiveFolder: this.normalizeArchiveFolder(loadedData.archiveFolder),
       showArchiveFolder: loadedData.showArchiveFolder ?? DEFAULT_SETTINGS.showArchiveFolder,
+      rightDocumentLocation: loadedData.rightDocumentLocation ?? DEFAULT_SETTINGS.rightDocumentLocation,
     };
   }
 
   async saveSettings(): Promise<void> {
     this.settings.archiveFolder = this.normalizeArchiveFolder(this.settings.archiveFolder);
+    this.settings.rightDocumentLocation = this.isRightDocumentLocation(this.settings.rightDocumentLocation)
+      ? this.settings.rightDocumentLocation
+      : DEFAULT_SETTINGS.rightDocumentLocation;
     await this.saveData(this.settings);
     this.updateArchiveFolderStyles();
   }
@@ -841,14 +867,16 @@ export default class PageModePlugin extends Plugin {
     }
 
     let file: TFile | null = null;
-    let leaf: WorkspaceLeaf | null = null;
+    let target: MarkdownLeafTarget | null = null;
     try {
+      target = this.getOrCreateRightMarkdownLeafTarget(sourceView);
       file = await this.createRootMarkdownFile();
-      leaf = this.app.workspace.createLeafBySplit(sourceView.leaf, "vertical", false);
-      await leaf.openFile(file, { active: false });
+      await target.leaf.openFile(file, { active: false });
       return file;
     } catch (error) {
-      leaf?.detach();
+      if (target?.detachOnFailure) {
+        target.leaf.detach();
+      }
       if (file) {
         try {
           await this.app.fileManager.trashFile(file);
@@ -860,6 +888,77 @@ export default class PageModePlugin extends Plugin {
       new Notice("Failed to create a right document.");
       return null;
     }
+  }
+
+  private getOrCreateRightMarkdownLeafTarget(sourceView: MarkdownView): MarkdownLeafTarget {
+    const emptyTarget = this.getNearestRightEmptyMarkdownLeafTarget(sourceView);
+    if (emptyTarget) {
+      return emptyTarget;
+    }
+
+    if (this.settings.rightDocumentLocation === "right-sidebar") {
+      return this.getOrCreateRightSidebarMarkdownLeafTarget();
+    }
+
+    return {
+      leaf: this.app.workspace.createLeafBySplit(sourceView.leaf, "vertical", false),
+      detachOnFailure: true,
+    };
+  }
+
+  private getOrCreateRightSidebarMarkdownLeafTarget(): MarkdownLeafTarget {
+    const existingLeaf = this.app.workspace.getRightLeaf(false);
+    if (existingLeaf?.view.getViewType() === "empty") {
+      return {
+        leaf: existingLeaf,
+        detachOnFailure: false,
+      };
+    }
+
+    const leaf = this.app.workspace.getRightLeaf(true) ?? existingLeaf;
+    if (!leaf) {
+      throw new Error("No right sidebar leaf available.");
+    }
+
+    return {
+      leaf,
+      detachOnFailure: leaf !== existingLeaf,
+    };
+  }
+
+  private getNearestRightEmptyMarkdownLeafTarget(sourceView: MarkdownView): MarkdownLeafTarget | null {
+    const sourceRect = this.getVisibleViewRect(sourceView);
+    if (!sourceRect) {
+      return null;
+    }
+
+    const sourceCenterX = this.getRectCenterX(sourceRect);
+    const candidates: Array<{ leaf: WorkspaceLeaf; distance: number }> = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf === sourceView.leaf || leaf.view.getViewType() !== "empty") {
+        return;
+      }
+
+      const containerEl = leaf.view.containerEl;
+      if (!this.isMainWorkspaceTarget(containerEl)) {
+        return;
+      }
+
+      const targetRect = containerEl.getBoundingClientRect();
+      if (targetRect.width === 0 || targetRect.height === 0 || this.getRectCenterX(targetRect) <= sourceCenterX + LINE_BOUNDARY_EPSILON_PX) {
+        return;
+      }
+
+      const horizontalGap = Math.max(0, targetRect.left - sourceRect.right);
+      const verticalGap = this.getVerticalGap(sourceRect, targetRect);
+      candidates.push({
+        leaf,
+        distance: horizontalGap * horizontalGap + verticalGap * verticalGap,
+      });
+    });
+
+    const target = candidates.sort((a, b) => a.distance - b.distance)[0];
+    return target ? { leaf: target.leaf, detachOnFailure: false } : null;
   }
 
   private async createRootMarkdownFile(): Promise<TFile> {
@@ -1965,6 +2064,23 @@ class PageModeSettingTab extends PluginSettingTab {
           this.plugin.settings.pageUnitScroll = value;
           await this.plugin.saveSettings();
         });
+      });
+
+    new Setting(containerEl)
+      .setName("New right document location")
+      .setDesc("When no Markdown document is available on the right, create the target here. Existing right documents and empty tabs are reused first.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOptions(RIGHT_DOCUMENT_LOCATION_OPTIONS)
+          .setValue(this.plugin.settings.rightDocumentLocation)
+          .onChange(async (value) => {
+            if (value !== "right-split" && value !== "right-sidebar") {
+              return;
+            }
+
+            this.plugin.settings.rightDocumentLocation = value;
+            await this.plugin.saveSettings();
+          });
       });
 
     new Setting(containerEl)
